@@ -1,0 +1,4 @@
+requests
+sqlalchemy
+bs4
+openai
