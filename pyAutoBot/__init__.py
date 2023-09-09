@@ -7,7 +7,6 @@ Base = declarative_base()
 class Website(Base):
     __tablename__ = 'websites'
     id = Column(Integer, Sequence('website_id_seq'), primary_key=True)
-    base_uri = Column(String, unique=True)
     url = Column(String)
     nomeente = Column(String)
     telefonostandard = Column(String)
