@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 
 
-openai.api_key = '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'
+openai.api_key = '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'
 
 
 class DataExtraction:

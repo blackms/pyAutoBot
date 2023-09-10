@@ -21,7 +21,7 @@ logger = colorlog.getLogger(__name__)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-openai.api_key = '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'
+openai.api_key = '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'
 
 class Utility:
     @staticmethod
@@ -146,17 +146,15 @@ class Scrapper:
         self.url = self._data_dict['url']
         self.confirm = confirm
         self.use_ai = use_ai
-
-    def run(self):
-        base_uri = Utility.get_base_uri(self.url)
+        
+    def initialize(self):
+        self.base_uri = Utility.get_base_uri(self.url)
         self.db_handler.init_db()
-        session = self.db_handler.get_session()
-        base_uri = base_uri.rstrip('/')
-        # check if we already know how to handle this agency
-        nomeente = self._data_dict['nomeente']
-        url = self._data_dict['url']
+        self.session = self.db_handler.get_session()
+        self.base_uri = self.base_uri.rstrip('/')
+        
+    def get_agenzia_instance(self, nomeente, url):
         agenzia = None
-
         agency_map = {
             'Gabetti': Gabetti,
             'RE/MAX': Remax,
@@ -169,69 +167,78 @@ class Scrapper:
                 agenzia = agency_class(url, logger=self.logger, use_AI=self.use_ai)
                 nomeente = agenzia.get_name()
                 break
-        website = session.query(Website).filter(Website.url.like(f"{base_uri}%")).first()
+
+        return agenzia
+    
+    def handle_unknown_agency(self, url: str):
+        # We don't have this agency in our classes, use generic one and try extrapolate data
+        self.logger.info(f"We don't have this agency in our classes, use generic one and try extrapolate data...")
+        agenzia = Generica(url, logger=self.logger, use_AI=self.use_ai)
         
-        if agenzia is None:
-            # We don't have this agency in our classes, use generic one and try extrapolate data
-            self.logger.info(f"We don't have this agency in our classes, use generic one and try extrapolate data...")
-            agenzia = Generica(url, logger=self.logger, use_AI=self.use_ai)
-            
-            agenzia.payload['nomeente'] = self.payload_handler.clean_name(self._data_dict['nomeente'])
-            self.logger.info(f"Cleaned name: {agenzia.payload['nomeente']}")
-            # input name of the agency
-            agenzia.payload['nomeente'] = input("Insert name of the agency: ")
-            agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
-            agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
-            agenzia.payload['cap'] = self._data_dict['cap']
-            agenzia.payload['localita'] = self._data_dict['localita0']
-            agenzia.payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
-            agenzia.payload['provincia'] = self._data_dict['localitaprovincia0']
-            agenzia.payload['url'] = self._data_dict['url']
-            agenzia.payload['agid'] = self.agid
-            agenzia.payload['localita1'] = agenzia.payload['localita']
-            agenzia.payload['localitacartella1'] = agenzia.payload['localitacartella']
-            agenzia.payload['localitaprovincia1'] = agenzia.payload['provincia']
+        agenzia.payload['nomeente'] = self.payload_handler.clean_name(self._data_dict['nomeente'])
+        self.logger.info(f"Cleaned name: {agenzia.payload['nomeente']}")
+        # input name of the agency
+        agenzia.payload['nomeente'] = input("Insert name of the agency: ")
+        agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
+        agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
+        agenzia.payload['cap'] = self._data_dict['cap']
+        agenzia.payload['localita'] = self._data_dict['localita0']
+        agenzia.payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
+        agenzia.payload['provincia'] = self._data_dict['localitaprovincia0']
+        agenzia.payload['url'] = self._data_dict['url']
+        agenzia.payload['agid'] = self.agid
+        agenzia.payload['localita1'] = agenzia.payload['localita']
+        agenzia.payload['localitacartella1'] = agenzia.payload['localitacartella']
+        agenzia.payload['localitaprovincia1'] = agenzia.payload['provincia']
 
-            # try to extrapolate the description
-            try:
-                ex_data = self.data_extractor.try_to_extrapolate_data(agenzia.payload['url'])
-                self.logger.warning(f"Extrapolated data: {ex_data}")
-                chi_siamo = ex_data['chisiamo']
-            except openai.error.RateLimitError:
-                self.logger.error(f"Rate limit reached, manual input...")
-                agenzia.payload['chisiamo'] = ''
-                pass 
+        # try to extrapolate the description
+        try:
+            ex_data = self.data_extractor.try_to_extrapolate_data(agenzia.payload['url'])
+            self.logger.warning(f"Extrapolated data: {ex_data}")
+            chi_siamo = ex_data['chisiamo']
+        except openai.error.RateLimitError:
+            self.logger.error(f"Rate limit reached, manual input...")
+            agenzia.payload['chisiamo'] = ''
+            pass 
 
-            email = re.sub(r'^\d+|(@gmail\.com).*$', r'\1', ex_data['email'])
-            
-            agenzia.payload['chisiamo'] = chi_siamo.encode('latin-1', errors='ignore').decode('unicode_escape')
-            agenzia.payload['email'] = email
-            agenzia.payload['noemail'] = 'Y' if agenzia.payload['email'] == '' else 'N'
-            if 'Mi dispiace' in agenzia.payload['chisiamo'] or agenzia.payload['chisiamo'] == '':
-                # failed to retrieve data from AI
-                self.logger.warning(f"Failed retrieving description via AI, manual input...")    
-                self.logger.error(f"Error retrieving data from openai, manual input...")
-                agenzia.payload['chisiamo'] = input("Insert description: ")
-        else:
-            self.logger.info(f"We have the agency in our classes, use the class to extrapolate data...")
-            self.logger.warning(f"We already know how to handle this agency: {nomeente}, using the description from the class...")
-            agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
-            agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
-            agenzia.payload['cap'] = self._data_dict['cap']
-            agenzia.payload['localita'] = self._data_dict['localita0']
-            agenzia.payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
-            agenzia.payload['provincia'] = self._data_dict['localitaprovincia0']
-            agenzia.payload['url'] = self._data_dict['url']
-            agenzia.payload['agid'] = self.agid
-            agenzia.payload['chisiamo'] = agenzia.get_description()
-            agenzia.payload['email'] = agenzia.get_email()
-            agenzia.payload['nomeente'] = agenzia.get_name()
-            agenzia.payload['localita1'] = agenzia.payload['localita']
-            agenzia.payload['localitacartella1'] = agenzia.payload['localitacartella']
-            agenzia.payload['localitaprovincia1'] = agenzia.payload['provincia']
-            # try to identify where do they operate
-            immobili = agenzia.get_lista_immobili()
-            
+        email = re.sub(r'^\d+|(@gmail\.com).*$', r'\1', ex_data['email'])
+        
+        agenzia.payload['chisiamo'] = chi_siamo.encode('latin-1', errors='ignore').decode('unicode_escape')
+        agenzia.payload['email'] = email
+        agenzia.payload['noemail'] = 'Y' if agenzia.payload['email'] == '' else 'N'
+        if 'Mi dispiace' in agenzia.payload['chisiamo'] or agenzia.payload['chisiamo'] == '':
+            # failed to retrieve data from AI
+            self.logger.warning(f"Failed retrieving description via AI, manual input...")    
+            self.logger.error(f"Error retrieving data from openai, manual input...")
+            agenzia.payload['chisiamo'] = input("Insert description: ")
+        
+        return agenzia
+    
+    
+    def handle_known_agency(self, agenzia):
+        self.logger.info(f"We have the agency in our classes, use the class to extrapolate data...")
+        self.logger.warning(f"We already know how to handle this agency: {agenzia.payload['nomeente']}, using the description from the class...")
+        agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
+        agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
+        agenzia.payload['cap'] = self._data_dict['cap']
+        agenzia.payload['localita'] = self._data_dict['localita0']
+        agenzia.payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
+        agenzia.payload['provincia'] = self._data_dict['localitaprovincia0']
+        agenzia.payload['url'] = self._data_dict['url']
+        agenzia.payload['agid'] = self.agid
+        agenzia.payload['chisiamo'] = agenzia.get_description()
+        agenzia.payload['email'] = agenzia.get_email()
+        agenzia.payload['nomeente'] = agenzia.get_name()
+        agenzia.payload['localita1'] = agenzia.payload['localita']
+        agenzia.payload['localitacartella1'] = agenzia.payload['localitacartella']
+        agenzia.payload['localitaprovincia1'] = agenzia.payload['provincia']
+        # try to identify where do they operate
+        immobili = agenzia.get_lista_immobili()
+        
+        return agenzia
+    
+    
+    def ask_user_confirmation(self, agenzia):
         if self.execute:
             self.logger.info(f"Payload: {json.dumps(agenzia.payload, indent=4)}")
             if not self.confirm:
@@ -244,19 +251,40 @@ class Scrapper:
                         break
                     else:
                         print("Invalid input. Please enter 'Y' or 'N'.")
-            
-            response = RequestHandler.execute_request(self.agid, agenzia.payload, HEADERS)
-            if response.status_code == 200:
-                self.logger.info(f"Request executed successfully")
-                # save payload to database
-                self.logger.info(f"Saving payload to database")
-                website = Website(**agenzia.payload)
-                session.add(website)
-                session.commit()
-                self.logger.info(f"Payload saved to database")
         else:
             self.logger.info(f"Execute flag is set to False, skipping request execution")
             self.logger.info(f"Payload: {json.dumps(agenzia.payload, indent=4)}")
+          
+            
+    def execute_request(self, agenzia):
+        website = self.session.query(Website).filter(Website.url.like(f"{self.base_uri}%")).first()
+        response = RequestHandler.execute_request(self.agid, agenzia.payload, HEADERS)
+        if response.status_code == 200:
+            self.logger.info(f"Request executed successfully")
+            # save payload to database
+            self.logger.info(f"Saving payload to database")
+            website = Website(**agenzia.payload)
+            self.session.add(website)
+            self.session.commit()
+            self.logger.info(f"Payload saved to database")
+            
+            
+    def run(self):
+        self.initialize()
+        nomeente = self._data_dict['nomeente']
+        url = self._data_dict['url']
+
+        agenzia = self.get_agenzia_instance(nomeente, url)
+        if agenzia is None:
+            agenzia = self.handle_unknown_agency(url)
+        else:
+            agenzia = self.handle_known_agency(agenzia)
+            
+        self.ask_user_confirmation(agenzia)        
+        self.execute_request(agenzia)
+            
+
+
 
             
 # The main execution code remains the same
