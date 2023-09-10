@@ -44,7 +44,7 @@ class DataExtraction:
 
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-4",  
+                model="gpt-3.5-turbo",  
                 messages=messages
             )
         except openai.error.InvalidRequestError:
@@ -64,7 +64,7 @@ class DataExtraction:
         ]
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-4",  
+                model="gpt-3.5-turbo",  
                 messages=messages
             )
         except Exception as e:
@@ -81,7 +81,7 @@ class DataExtraction:
         ]
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-4",  
+                model="gpt-3.5-turbo",  
                 messages=messages
             )
         except Exception as e:

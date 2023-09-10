@@ -51,12 +51,13 @@ class Generica(Agenzia):
 
     
 class Gabetti(Agenzia):
-    def __init__(self, url, logger: logging.Logger):
+    def __init__(self, url, logger: logging.Logger, use_AI: bool = False):
         super().__init__(url, logger)
         self.soup = None
         self.logger.getChild(__name__).info(f"Gabetti object created for {self.url}")
         self._load_html()
         self.data_extraction = DataExtraction(self.logger)
+        self.use_AI = use_AI
         
     def get_email(self):
         email_link = self.soup.find('a', class_='icon icon-email')
@@ -75,11 +76,11 @@ class Gabetti(Agenzia):
         msg += "Il nostro sistema organizzativo si fonda sull’integrazione e il coordinamento delle competenze specifiche di ciascuna società del Gruppo nell’ambito delle seguenti aree: Consulenza, Valorizzazione, Gestione, Intermediazione, Mediazione Creditizia e Assicurativa, Riqualificazione. "
         msg += "Siamo l’unico player ad avere sedi corporate in tutti i maggiori capoluoghi con presidio regionale e siamo presenti capillarmente in tutta Italia con le nostre reti in franchising: oltre 1.200 agenzie immobiliari e 1.300 imprese nell’ambito della riqualificazione."
         self.payload['chisiamo'] = msg
-        return msg
+        return self.payload['chisiamo']
     
     def get_name(self):
-        self.payload['chisiamo'] = 'Agenzia Immobiliare Gobetti'
-        return self.payload['chisiamo']
+        self.payload['nomeente'] = 'Agenzia Immobiliare Gabetti'
+        return self.payload['nomeente']
     
     
 class Remax(Agenzia):
@@ -158,7 +159,11 @@ class Remax(Agenzia):
         self.logger.info(f"Found {len(immobili)} immobili.")
         for immobile in immobili:
             location_text = immobile.text.strip()
-            city, province = location_text.split(', ')
+            try:
+                city, province = location_text.split(', ')
+            except ValueError:
+                # this means that the data is not completed, province is missing, skip it.
+                continue
             properties.append({'City': city, 'Province': province})
         
         # Count and sort by occurrences
@@ -187,4 +192,29 @@ class Toscano(Agenzia):
     def get_name(self):
         self.payload['nomeente'] = 'Agenzia Immobiliare Toscano'
         return self.payload['nomeente']
+
+
+class Tecnorete(Agenzia):
+    def __init__(self, url, logger: logging.Logger, use_AI: bool = False):
+        super().__init__(url, logger)
+        self.soup = None
+        self.logger.getChild(__name__).info(f"Tecnorete object created for {self.url}")
+        self._load_html()
+        self.data_extraction = DataExtraction(self.logger)
     
+    def get_email(self):
+        # Find the anchor tag with the 'mailto' in its href attribute
+        email_tag = self.soup.find('a', href=lambda x: x and 'mailto:' in x)
+        # Extract the email
+        email = email_tag.text if email_tag else None
+        self.payload['email'] = email
+        return email
+    
+    def get_description(self):
+        self.payload['chisiamo'] = "Il marchio Tecnocasa è nato nel 1979 da Oreste Pasquali, focalizzandosi sull'intermediazione immobiliare nell'hinterland milanese. Nel corso degli anni, Tecnocasa si è espansa a livello internazionale, ha acquisito e lanciato vari marchi e servizi, ed è diventata una figura chiave nel settore immobiliare e creditizio, culminando con fusioni e acquisizioni nel 2022."
+        return self.payload['chisiamo']
+    
+    def get_name(self):
+        self.payload['nomeente'] = 'Agenzia Immobiliare Tecnorete'
+        return self.payload['nomeente']
+        
