@@ -58,7 +58,7 @@ class DataExtraction:
     
     def generalize_description(self, desc: str) -> str:
         messages = [
-            {"role:": "system", "content": "Sei un assistente virtuale che lavora per un'agenzia immobiliare."},
+            {"role": "system", "content": "Sei un assistente virtuale che lavora per un'agenzia immobiliare."},
             {"role": "user", "content": 
                 f"Generalizza il seguente testo togliendo riferimenti a nomi: {desc}"}
         ]
@@ -75,7 +75,7 @@ class DataExtraction:
     
     def try_parse_description(self, desc: str) -> str:
         messages = [
-            {"role:": "system", "content": "Sei un assistente virtuale che lavora per un'agenzia immobiliare."},
+            {"role": "system", "content": "Sei un assistente virtuale che lavora per un'agenzia immobiliare."},
             {"role": "user", "content": 
                 f"Prova ad estrapolare una descrizione dell'agenzia immobiliare dal seguente testo: {desc}"}
         ]
@@ -89,3 +89,10 @@ class DataExtraction:
             return "Error retrieving data."
         
         return response['choices'][0]['message']['content'].strip()
+    
+    def get_soup(self, url: str) -> BeautifulSoup:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers)
+        return BeautifulSoup(response.text, 'html.parser')

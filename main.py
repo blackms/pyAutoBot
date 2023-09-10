@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from pyAutoBot import DBHandler, Website
 from config import HEADERS, SITE_URL, BASE_PAYLOAD
 from bs4 import BeautifulSoup
-from pyAutoBot.agenzie import Gabetti, Remax, Toscano
+from pyAutoBot.agenzie import Gabetti, Remax, Toscano, Generica
 from pyAutoBot.data_extraction import DataExtraction
 
 # Setup logging
@@ -83,31 +83,31 @@ class PayloadHandler:
         
     def clean_name(self, name: str) -> str:
         self.logger.info(f"Cleaning name: {name}")
-        # check if we have already Agenzia Immobiliare in the name, otherwise add it
+        
+        # Ensure the name starts with 'Agenzia Immobiliare'
         if 'Agenzia Immobiliare' not in name:
-            name =  f"Agenzia Immobiliare {name}"
-        # clean Tempocasa case, removing everything after it
-        pattern = "(Agenzia Immobiliare Tempocasa).*"
-        name = re.sub(pattern, r'\1', name)
-        # clean RE/MAX case, removing everything after it
-        pattern = "(Agenzia Immobiliare RE/MAX).*"
-        name = re.sub(pattern, r'\1', name)
-        # clean Tecnocasa case, removing everything after it
-        pattern = "(Agenzia Immobiliare Tecnocasa).*"
-        name = re.sub(pattern, r'\1', name)        
-        # clean Affiliato Tecnocasa case, removing everything after it
-        pattern = "(Agenzia Immobiliare Affiliato Tecnocasa).*"
-        name = re.sub(pattern, r'\1', name)
-        pattern = "(Agenzia Immobiliare Affiliato RE/MAX).*"
-        name = re.sub(pattern, r'\1', name)
-        pattern = "(Agenzia Immobiliare Progetto Casa Napoli).*"
-        name = re.sub(pattern, r'\1', name)
-        pattern = "(Agenzia Immobiliare ScegliCasa Roma).*"
-        name = re.sub(pattern, r'\1', name)
-        pattern = "Toscano.* Agenzia Immobiliare"
-        match = re.search(pattern, name)
-        if match:
+            name = f"Agenzia Immobiliare {name}"
+        
+        # List of patterns to clean
+        patterns = [
+            "(Agenzia Immobiliare Tempocasa).*",
+            "(Agenzia Immobiliare RE/MAX).*",
+            "(Agenzia Immobiliare Tecnocasa).*",
+            "(Agenzia Immobiliare Affiliato Tecnocasa).*",
+            "(Agenzia Immobiliare Affiliato RE/MAX).*",
+            "(Agenzia Immobiliare Progetto Casa Napoli).*",
+            "(Agenzia Immobiliare ScegliCasa Roma).*"
+        ]
+        
+        for pattern in patterns:
+            name = re.sub(pattern, r'\1', name)
+        
+        # Special cases
+        if re.search("Toscano.* Agenzia Immobiliare", name):
             name = 'Agenzia Immobiliare Toscano'
+        elif re.search("Agenzia Immobiliare 7Case.*", name):
+            name = 'Agenzia Immobiliare 7Case'
+        
         return name
     
     
@@ -155,7 +155,7 @@ class PayloadHandler:
         return base_payload
 
 class Scrapper:
-    def __init__(self, agid: int, execute: bool, confirm: bool):
+    def __init__(self, agid: int, execute: bool, confirm: bool, use_ai: bool = False):
         self.logger = logger.getChild(self.__class__.__name__)
         self.agid = agid
         self.db_handler = DBHandler()
@@ -165,6 +165,7 @@ class Scrapper:
         self.payload_handler = PayloadHandler(self.logger)
         self.url = self._data_dict['url']
         self.confirm = confirm
+        self.use_ai = use_ai
         
 
     def run(self):
@@ -175,6 +176,7 @@ class Scrapper:
         # check if we already know how to handle this agency
         nomeente = self._data_dict['nomeente']
         url = self._data_dict['url']
+        agenzia = None
 
         agency_map = {
             'Gabetti': Gabetti,
@@ -184,65 +186,63 @@ class Scrapper:
 
         for agency_name, agency_class in agency_map.items():
             if agency_name in nomeente:
-                agenzia = agency_class(url, logger=self.logger)
+                agenzia = agency_class(url, logger=self.logger, use_AI=self.use_ai)
                 nomeente = agenzia.get_name()
                 break
         website = session.query(Website).filter(Website.url.like(f"{base_uri}%")).first()
         
-        # if base_uri is present in websites nomeent column, then load the payload from the database
-        if website is not None:
-            self.logger.info(f"Loading payload from database for base_uri: {base_uri}")
-            # we take information from the database, but 
-            # the field telefonostandard, indirizzo, cap localita, localitacartella, provincia
-            # will be taken by the data_dict
-            data_payload = {column.name: getattr(website, column.name) for column in Website.__table__.columns if column.name != "id"}
-            # overwrite the filed from data_dict
-            data_payload['nomeente'] = self.payload_handler.clean_name(self._data_dict['nomeente'])
-            data_payload['telefonostandard'] = self._data_dict['telefonostandard']
-            data_payload['indirizzo'] = self._data_dict['indirizzo']
-            data_payload['cap'] = self._data_dict['cap']
-            data_payload['localita'] = self._data_dict['localita0']
-            data_payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
-            data_payload['provincia'] = self._data_dict['localitaprovincia0']
-            data_payload['url'] = self._data_dict['url']
-            data_payload['agid'] = self.agid
-            if agenzia is not None:
-                self.logger.warning(f"We already know how to handle this agency: {nomeente}, using the description from the class...")
-                data_payload['chisiamo'] = agenzia.get_description()
-                data_payload['email'] = agenzia.get_email()
-            else:
-                # try to extrapolate the description
-                ex_data = self.data_extractor.try_to_extrapolate_data(data_payload['url'])
-                self.logger.warning(f"Extrapolated data: {ex_data}")
-                chi_siamo = ex_data['chisiamo']
-                email = ex_data['email']
-                data_payload['chisiamo'] = chi_siamo.encode('latin-1', errors='ignore').decode('unicode_escape')
-                data_payload['email'] = email
-                if 'Mi dispiace' in data_payload['chisiamo']:
-                    # we failed retrieving via AI the description let's use the one from the database,
-                    # make it general via open ai
-                    self.logger.info(f"Failed retrieving description via AI, using the one from the database...")
-                    data_payload['chisiamo'] = self.data_extractor.generalize_description(data_payload['chisiamo'])
-                    if data_payload['chisiamo'] == 'Error retrieving data.':
-                        self.logger.error(f"Error retrieving data from openai, manual input...")
-                        data_payload['chisiamo'] = input("Insert description: ")
+        if agenzia is None:
+            # We don't have this agency in our classes, use generic one and try extrapolate data
+            self.logger.info(f"We don't have this agency in our classes, use generic one and try extrapolate data...")
+            agenzia = Generica(url, logger=self.logger, use_AI=self.use_ai)
+            
+            agenzia.payload['nomeente'] = self.payload_handler.clean_name(self._data_dict['nomeente'])
+            agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
+            agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
+            agenzia.payload['cap'] = self._data_dict['cap']
+            agenzia.payload['localita'] = self._data_dict['localita0']
+            agenzia.payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
+            agenzia.payload['provincia'] = self._data_dict['localitaprovincia0']
+            agenzia.payload['url'] = self._data_dict['url']
+            agenzia.payload['agid'] = self.agid
+            # try to extrapolate the description
+            ex_data = self.data_extractor.try_to_extrapolate_data(agenzia.payload['url'])
+            self.logger.warning(f"Extrapolated data: {ex_data}")
+            chi_siamo = ex_data['chisiamo']
+            email = ex_data['email']
+            agenzia.payload['chisiamo'] = chi_siamo.encode('latin-1', errors='ignore').decode('unicode_escape')
+            agenzia.payload['email'] = email
+            if 'Mi dispiace' in agenzia.payload['chisiamo']:
+                # we failed retrieving via AI the description let's use the one from the database,
+                # make it general via open ai
+                self.logger.info(f"Failed retrieving description via AI, using the one from the database...")
+                agenzia.payload['chisiamo'] = self.data_extractor.generalize_description(data_payload['chisiamo'])
+                if agenzia.payload['chisiamo'] == 'Error retrieving data.':
+                    self.logger.error(f"Error retrieving data from openai, manual input...")
+                    agenzia.payload['chisiamo'] = input("Insert description: ")
         else:
-            self.logger.warning(f"We don't have this base_uri in our database: {base_uri}, we try to load the informations...")
-            self.logger.warning(f"")
             data_payload = self.payload_handler.create_base_payload(self._data_dict, self.agid)
             # localita1, localitaprovincia1 and localitacartella1 will be the same as localita and localitacartella
-            data_payload['localita1'] = data_payload['localita']
-            data_payload['localitaprovincia1'] = data_payload['provincia']
-            data_payload['localitacartella1'] = data_payload['localitacartella']
-            data_payload['noemail'] = 'Y' if data_payload['email'] == '' else 'N'
+            agenzia.payload['localita1'] = data_payload['localita']
+            agenzia.payload['localitaprovincia1'] = data_payload['provincia']
+            agenzia.payload['localitacartella1'] = data_payload['localitacartella']
+            agenzia.payload['noemail'] = 'Y' if data_payload['email'] == '' else 'N'
             # Sanitize description
             if 'Mi dispiace' in data_payload['chisiamo']:
                 # we failed retrieving via AI the description, let's do it manually in this case
                 self.logger.info(f"Failed retrieving description via AI, manual input...")
                 data_payload['chisiamo'] = input("Insert description: ")
+            # We have the agency in our classes, use the class to extrapolate data
+            self.logger.info(f"We have the agency in our classes, use the class to extrapolate data...")
+            self.logger.warning(f"We already know how to handle this agency: {nomeente}, using the description from the class...")
+            agenzia.payload['chisiamo'] = agenzia.get_description()
+            agenzia.payload['email'] = agenzia.get_email()
+            agenzia.payload['nomeente'] = agenzia.get_name()
+            # try to identify where do they operate
+            immobili = agenzia.get_lista_immobili()
             
         if self.execute:
-            self.logger.info(f"Payload: {json.dumps(data_payload, indent=4)}")
+            self.logger.info(f"Payload: {json.dumps(agenzia.payload, indent=4)}")
             if not self.confirm:
                 while True:
                     user_input = input("Do you want to continue? (Y/N): ")
@@ -254,12 +254,12 @@ class Scrapper:
                     else:
                         print("Invalid input. Please enter 'Y' or 'N'.")
             
-            response = RequestHandler.execute_request(self.agid, data_payload, HEADERS)
+            response = RequestHandler.execute_request(self.agid, agenzia.payload, HEADERS)
             if response.status_code == 200:
                 self.logger.info(f"Request executed successfully")
                 # save payload to database
                 self.logger.info(f"Saving payload to database")
-                website = Website(**data_payload)
+                website = Website(**agenzia.payload)
                 session.add(website)
                 session.commit()
                 self.logger.info(f"Payload saved to database")
@@ -270,10 +270,11 @@ class Scrapper:
 # The main execution code remains the same
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--agid', help='agid', default='167')
+    parser.add_argument('--agid', help='agid', default='190')
     parser.add_argument('--execute', help='execute request, default is False', default=False, action='store_true')
     parser.add_argument('--confirm', help='confirm request execution', default=False, action='store_true')
     parser.add_argument('--debug', help='debug mode', default=False, action='store_true')
+    parser.add_argument('--use-ai', help='use AI to extrapolate data', default=False, action='store_true')
     args = parser.parse_args()
     
     if args.debug:
