@@ -21,6 +21,7 @@ class Agenzia:
         self.use_AI = use_AI
         
     def _load_html(self):
+        self.logger.critical(f"Loading HTML for {self.url}...")
         response = requests.get(self.url, headers=self.headers)
         if response.status_code == 200:
             self.soup = BeautifulSoup(response.text, 'html.parser')
@@ -39,6 +40,25 @@ class Agenzia:
     
     def get_payload(self):
         return self.payload
+    
+    def is_agenzia_vacanze(self):
+        name_keywords = [
+            'casa vacanze', 'appartamenti per vacanze', 
+            'affitti brevi', 'affitti turistici', 'affitti per vacanze', 
+            'appartamenti', 'vacanze', 'vacanza'
+        ]
+        
+        chi_siamo_keywords = [
+            'breakfast', 'vacanza', 'vacanze', 'appartamenti', 
+            'appartamento', 'tour', 'touring'
+        ]
+        
+        for name_keyword in name_keywords:
+            if name_keyword in self.payload['nomeente'].lower():
+                return True
+        for chi_siamo_keyword in chi_siamo_keywords:
+            if chi_siamo_keyword in self.payload['chisiamo'].lower():
+                return True
     
     
 class Generica(Agenzia):

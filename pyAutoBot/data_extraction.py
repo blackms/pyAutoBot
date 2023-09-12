@@ -4,9 +4,9 @@ import re
 import openai
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
+from secret import OPENAI_API_KEY
 
-
-openai.api_key = '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'
+openai.api_key = OPENAI_API_KEY
 
 
 class DataExtraction:
@@ -34,6 +34,7 @@ class DataExtraction:
             # extrapolate the domain for the url
             domain = urlparse(url).netloc.replace("www.", "")
             emails = f"info@{domain}"
+
         self.logger.info(f"Emails: {emails}")
         # Set up the chat-based interaction
         messages = [
