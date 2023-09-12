@@ -2,3 +2,5 @@ requests
 sqlalchemy
 bs4
 openai
+validate_email
+regex

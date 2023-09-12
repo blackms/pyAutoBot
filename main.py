@@ -4,6 +4,7 @@ import logging
 import json
 import openai
 import re
+import regex
 import colorlog
 from urllib.parse import urlparse
 from pyAutoBot import DBHandler, Website
@@ -12,6 +13,7 @@ from bs4 import BeautifulSoup
 from pyAutoBot.agenzie import Gabetti, Remax, Toscano, Generica, Tecnorete
 from pyAutoBot.data_extraction import DataExtraction
 from secret import OPENAI_API_KEY
+from validate_email import validate_email
 
 # Setup logging
 handler = colorlog.StreamHandler()
@@ -33,6 +35,18 @@ class Utility:
         return base_uri.rstrip('/')
 
     # Other utility methods can be added here
+    @staticmethod
+    def clean_email(email):
+        # Remove invalid characters
+        email = regex.sub(r"[^a-zA-Z0-9._%+-@]", "", email)
+        
+        # Correct common TLD mistakes
+        email = regex.sub(r"\.con\b", ".com", email)
+        
+        # Remove characters after TLD
+        email = regex.sub(r"(\.[a-zA-Z]{2,4})[a-zA-Z]*$", r"\1", email)
+        
+        return email
 
 
 class RequestHandler:
@@ -143,6 +157,18 @@ class PayloadHandler:
 
 
 class AgencyValidator:
+    @staticmethod
+    def is_valid_email(email):
+        # Basic validation
+        is_valid = validate_email(email)
+        
+        # Check if the domain of the email exists
+        domain_exists = validate_email(email, check_mx=True)
+        
+        # Check if the email is accepted by the domain
+        email_accepted = validate_email(email, verify=True)
+        
+        return is_valid and domain_exists and email_accepted
 
     @staticmethod
     def validate_agency_data(data):
@@ -154,9 +180,8 @@ class AgencyValidator:
             return False, "Nomeente contains 'Mi dispiace'."
 
         # Valida l'email tramite regex
-        email_pattern = r"[^@]+@[^@]+\.[^@]+"
-        if not re.match(email_pattern, data.get('email', '')):
-            return False, "Invalid email format."
+        if not AgencyValidator.is_valid_email(data.get('email')):
+            return False, "Email is not valid."
 
         # Controlla che noemail sia impostato su 'N'
         if data.get('noemail') != 'N':
@@ -273,16 +298,13 @@ class Scrapper:
             pass
 
         # try to clean mail
-        email = re.sub(r'^\d+|(@gmail\.com).*$', r'\1', ex_data['email'])
-        # Define the regex pattern for a valid email
-        pattern = r'^(\w+@[a-zA-Z_]+?\.[a-zA-Z]{2,6})[a-zA-Z]*$'
-        # Search for matches
-        match = re.search(pattern, email)
-        # If a match is found, extract the valid email
-        if match:
-            email = match.group(1)
-        # last pass
-        email = email[:-1] if email.endswith(".comC") else email
+        email = Utility.clean_email(ex_data['email'])
+        is_valid = AgencyValidator.is_valid_email(email)
+        if self.confirm and not is_valid: exit(f"Invalid email: {email}")
+        
+        if not is_valid:
+            self.logger.warning(f"Invalid email: {email}")
+            email = input("Insert email: ")
 
         agenzia.payload['chisiamo'] = chi_siamo.encode(
             'latin-1', errors='ignore').decode('unicode_escape')
