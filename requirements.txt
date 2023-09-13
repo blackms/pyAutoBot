@@ -5,4 +5,4 @@ openai
 validate_email
 regex
 colorlog
-pyDNS
+py3DNS

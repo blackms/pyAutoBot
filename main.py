@@ -283,7 +283,7 @@ class Scrapper:
         agenzia.payload['localitacartella1'] = agenzia.payload['localitacartella']
         agenzia.payload['localitaprovincia1'] = agenzia.payload['provincia']
 
-        agenzia.payload['nomeente'] = self.extract_name_from_text(agenzia)
+        agenzia.payload['nomeente'] = agenzia.extract_name_from_text(agenzia)
         self.get_agency_name_confirmation(agenzia)
 
         # try to extrapolate the description
@@ -341,34 +341,6 @@ class Scrapper:
                 exit(f"Invalid agency data: {message}")
 
         return agenzia
-
-    def extract_name_from_text(self, agenzia):
-        if not agenzia.soup:
-            self.logger.error("agenzia.soup is None.")
-            return None
-        
-        text = agenzia.soup.get_text(separator=' ', strip=True)
-        messages = [
-            {"role": "system", "content": "Sei un assistente virtuale che lavora per un'agenzia immobiliare."},
-            {"role": "user", "content": "Estrai e restituisci solo il nome dell'agenzia immobiliare preceduto da Agenzia Immobiliare dal seguente testo:" + text}
-        ]
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=messages
-            )
-        except openai.error.InvalidRequestError:
-            self.logger.error(f"Cannot retrieve agency name from AI.")
-            return None
-        found_name = response['choices'][0]['message']['content'].strip()
-        if isinstance(found_name, str):
-            return found_name
-        if isinstance(found_name, dict):
-            # Se il risultato è un dizionario, prendi i suoi valori
-            found_name = list(found_name.values())
-        else:
-            # Altrimenti, assegna direttamente il risultato
-            found_name = found_name
 
     def extract_locations_from_text(self, agenzia):
         text = agenzia.soup.get_text(separator=' ', strip=True)
@@ -550,10 +522,11 @@ class Scrapper:
         self.execute_request(agenzia)
 
 
+
 # The main execution code remains the same
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--agid', help='agid', default='476')
+    parser.add_argument('--agid', help='agid', default='525')
     parser.add_argument('--execute', help='execute request, default is False',
                         default=False, action='store_true')
     parser.add_argument('--confirm', help='confirm request execution',
@@ -575,6 +548,10 @@ if __name__ == '__main__':
                        for item in data if re.search(r'\[(\d+)\]', item)]
             agids = list(set(numbers))
             logger.info(f"Agids: {','.join(map(str, sorted(agids)))}")
+        for agid in agids:
+            scraper = Scrapper(agid, args.execute, args.confirm, args.use_ai)
+            scraper.run()
+            del scraper
 
     else:
         scraper = Scrapper(args.agid, args.execute, args.confirm)

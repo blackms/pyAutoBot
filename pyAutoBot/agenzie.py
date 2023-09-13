@@ -2,13 +2,17 @@ import requests
 import logging
 import re
 import json
+import openai
 from urllib.parse import urlparse
 from abc import ABC, abstractmethod
 from bs4 import BeautifulSoup
 from .data_extraction import DataExtraction
 from config import BASE_PAYLOAD
 from collections import Counter
+from secret import OPENAI_API_KEY
 
+
+openai.api_key = OPENAI_API_KEY
 
 class Agenzia:
     def __init__(self, url: str, logger: logging.Logger, use_AI: bool = False):
@@ -25,18 +29,37 @@ class Agenzia:
         response = requests.get(self.url, headers=self.headers)
         if response.status_code == 200:
             self.soup = BeautifulSoup(response.text, 'html.parser')
+            
+    def _call_open_ai(self, message: list) -> str:
+        try:
+            response = openai.ChatCompletion.create(
+                engine="gpt-3.5-turbo",
+                prompt=message,
+            )
+            return response['choices'][0]['message']['content'].strip()
+        except openai.error.InvalidRequestError:
+            self.logger.error(f"Failed to call OpenAI API.")
+            return None
     
-    @abstractmethod
-    def get_email(self):
-        raise NotImplementedError
-    
-    @abstractmethod
-    def get_description(self):
-        raise NotImplementedError
-    
-    @abstractmethod
-    def get_lista_immobili(self):
-        pass
+    def extract_name_from_text(self, agenzia):
+        if not agenzia.soup:
+            self.logger.error("agenzia.soup is None.")
+            return None
+        
+        text = agenzia.soup.get_text(separator=' ', strip=True)
+        messages = [
+            {"role": "system", "content": "Sei un assistente virtuale che lavora per un'agenzia immobiliare."},
+            {"role": "user", "content": "Estrai e restituisci solo il nome dell'agenzia immobiliare preceduto da Agenzia Immobiliare dal seguente testo:" + text}
+        ]
+        found_name = self._call_open_ai(messages)
+        if isinstance(found_name, str):
+            return found_name
+        if isinstance(found_name, dict):
+            # Se il risultato è un dizionario, prendi i suoi valori
+            found_name = list(found_name.values())
+        else:
+            # Altrimenti, assegna direttamente il risultato
+            found_name = found_name
     
     def get_payload(self):
         return self.payload
