@@ -6,15 +6,16 @@ from urllib.parse import urlparse
 
 import colorlog
 import openai
-import requests
+from geopy.distance import geodesic
+from geopy.geocoders import Nominatim
 from validate_email import validate_email
 
 from config import HEADERS, SITE_URL
 from pyAutoBot import DBHandler, Website
-from pyAutoBot.agenzie import Gabetti, Generica, Remax, Tecnorete, Toscano
-from pyAutoBot.data_extraction import DataExtraction
-from pyAutoBot.RequestHandler import RequestHandler
+from pyAutoBot.Agenzie import Gabetti, Generica, Remax, Tecnorete, Toscano
+from pyAutoBot.DataExtractor import DataExtractor
 from pyAutoBot.PayloadHandler import PayloadHandler
+from pyAutoBot.RequestHandler import RequestHandler
 from pyAutoBot.Utility import Utility
 from secret import OPENAI_API_KEY
 
@@ -56,10 +57,10 @@ class AgencyValidator:
         domain_exists = validate_email(email, check_mx=True)
         
         # Check if the email is accepted by the domain
-        # email_accepted = validate_email(email, verify=True)
-        logger.info(f"Email: {email}, is_valid: {is_valid}, domain_exists: {domain_exists}")
+        email_accepted = validate_email(email, verify=True)
+        logger.info(f"Email: {email}, is_valid: {is_valid}, domain_exists: {domain_exists}, email_accepted: {email_accepted}")
         
-        return is_valid and domain_exists
+        return is_valid
 
     @staticmethod
     def validate_agency_data(data):
@@ -93,6 +94,9 @@ class AgencyValidator:
         # Controlla che chisiamo non sia vuoto e contenga testo
         if not data.get('chisiamo') or not data['chisiamo'].strip():
             return False, "chisiamo is empty or does not contain text."
+        
+        if 'Error retrieving data.' in data.get('chisiamo'):
+            return False, "chisiamo contains 'Error retrieving data.'."
 
         return True, "All checks passed."
 
@@ -103,7 +107,7 @@ class Scrapper:
         self.agid = agid
         self.db_handler = DBHandler()
         self.execute = execute
-        self.data_extractor = DataExtraction(self.logger)
+        self.data_extractor = DataExtractor(self.logger)
         self.reuest_handler = RequestHandler(self.logger)
         self._data_dict = self.reuest_handler.load_agency_from_site(
             f"{SITE_URL}/agenzia-mod.php?agid={self.agid}")
@@ -111,6 +115,7 @@ class Scrapper:
         self.url = self._data_dict['url']
         self.confirm = confirm
         self.use_ai = use_ai
+        self.geolocator = Nominatim(user_agent="pyAutoBotAgenzie")
         with open('comuni.json', 'r') as data:
             self.comuni = json.load(data)
 
@@ -157,12 +162,8 @@ class Scrapper:
                     break
                 else:
                     logger.warning("Invalid choice. Please enter 'Y' or 'N'.")
-
-    def handle_unknown_agency(self, url: str):
-        self.logger.info(
-            "We don't have this agency in our classes, use generic one and try extrapolate data...")
-        
-        agenzia = Generica(url, logger=self.logger, use_AI=self.use_ai)
+                    
+    def _set_common_payload(self, agenzia):
         agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
         agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
         agenzia.payload['cap'] = self._data_dict['cap']
@@ -175,7 +176,16 @@ class Scrapper:
         agenzia.payload['localitacartella1'] = agenzia.payload.get('localitacartella')
         agenzia.payload['localitaprovincia1'] = agenzia.payload.get('provincia')
 
+    def handle_unknown_agency(self, url: str):
+        self.logger.info(
+            "We don't have this agency in our classes, use generic one and try extrapolate data...")
+        
+        agenzia = Generica(url, logger=self.logger, use_AI=self.use_ai)
+        
+        self._set_common_payload(agenzia)
+
         agenzia.payload['nomeente'] = agenzia.extract_name_from_text(agenzia)
+        self.logger.debug(f"Found name: {agenzia.payload['nomeente']}")
         self.get_agency_name_confirmation(agenzia)
 
         chi_siamo = ''
@@ -183,7 +193,7 @@ class Scrapper:
         try:
             ex_data = self.data_extractor.try_to_extrapolate_data(
                 agenzia.payload.get('url'))
-            self.logger.warning(f"Extrapolated data: {ex_data}")
+            self.logger.debug(f"Extrapolated data: {ex_data}")
             chi_siamo = ex_data.get('chisiamo', '')
         except openai.error.RateLimitError:
             self.logger.error("Rate limit reached, manual input...")
@@ -216,6 +226,7 @@ class Scrapper:
         if self.confirm:
             is_valid, message = AgencyValidator.validate_agency_data(agenzia.payload)
             if not is_valid:
+                self.logger.debug(json.dumps(agenzia.payload, indent=4))
                 exit(f"Invalid agency data: {message}")
 
         return agenzia
@@ -239,7 +250,12 @@ class Scrapper:
                 self.logger.warning(f"Failed retrieving locations via AI. Using parser method")
                 return []
 
-            loaded_data = json.loads(found_locations)
+            try:
+                loaded_data = json.loads(found_locations)
+            except json.decoder.JSONDecodeError:
+                self.logger.error(f"Cannot parse locations from AI. Using only the default location")
+                return []
+            
             if isinstance(loaded_data, dict):
                 found_locations = list(loaded_data.values())
             else:
@@ -258,13 +274,24 @@ class Scrapper:
         return [location for location in locations if location]
 
 
+    def get_distance_between_provinces(self, province1, province2):
+        location1 = self.geolocator.geocode(f"{province1}, Italy")
+        location2 = self.geolocator.geocode(f"{province2}, Italy")
+
+        if location1 and location2:
+            distance = geodesic((location1.latitude, location1.longitude), (location2.latitude, location2.longitude)).km
+            return distance
+        return float('inf')  # Return a large value if we can't get the location
+
     def add_location_to_payload(self, agenzia, locations):
         filters = ['napoli', 'canna']
-        existing_locations = [agenzia.payload.get(
-            f'localita{i}') for i in range(1, 4)]
+        existing_locations = [agenzia.payload.get(f'localita{i}') for i in range(1, 4)]
+        primary_province = agenzia.payload['localita1']
 
         for location in locations:
-            if location['nome'] not in filters and location['nome'] not in existing_locations:
+            distance = self.get_distance_between_provinces(primary_province, location['sigla'])
+            self.logger.info(f"Distance between {primary_province} and {location['sigla']}: {distance} km")
+            if location['nome'] not in filters and location['nome'] not in existing_locations and distance <= 50:
                 index = None
                 if not agenzia.payload['localita2']:
                     index = '2'
@@ -273,29 +300,18 @@ class Scrapper:
 
                 if index:
                     agenzia.payload[f'localita{index}'] = location['nome']
-                    agenzia.payload[f'localitacartella{index}'] = location['nome'].lower(
-                    )
+                    agenzia.payload[f'localitacartella{index}'] = location['nome'].lower()
                     agenzia.payload[f'localitaprovincia{index}'] = location['sigla']
 
     def handle_known_agency(self, agenzia):
         self.logger.info(
-            f"We have the agency in our classes, use the class to extrapolate data...")
-        self.logger.warning(
             f"We already know how to handle this agency: {agenzia.payload['nomeente']}, using the description from the class...")
-        agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
-        agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
-        agenzia.payload['cap'] = self._data_dict['cap']
-        agenzia.payload['localita'] = self._data_dict['localita0']
-        agenzia.payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
-        agenzia.payload['provincia'] = self._data_dict['localitaprovincia0']
-        agenzia.payload['url'] = self._data_dict['url']
+        
+        self._set_common_payload(agenzia)
         agenzia.payload['agid'] = self.agid
         agenzia.payload['chisiamo'] = agenzia.get_description()
         agenzia.payload['email'] = agenzia.get_email()
         agenzia.payload['nomeente'] = agenzia.get_name()
-        agenzia.payload['localita1'] = agenzia.payload['localita']
-        agenzia.payload['localitacartella1'] = agenzia.payload['localitacartella']
-        agenzia.payload['localitaprovincia1'] = agenzia.payload['provincia']
         # try to identify where do they operate
         immobili = agenzia.get_lista_immobili()
         # try get locations from the text
