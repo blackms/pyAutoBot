@@ -1,159 +1,49 @@
-import requests
 import argparse
-import logging
 import json
-import openai
+import logging
 import re
-import regex
-import colorlog
 from urllib.parse import urlparse
-from pyAutoBot import DBHandler, Website
-from config import HEADERS, SITE_URL
-from bs4 import BeautifulSoup
-from pyAutoBot.agenzie import Gabetti, Remax, Toscano, Generica, Tecnorete
-from pyAutoBot.data_extraction import DataExtraction
-from secret import OPENAI_API_KEY
+
+import colorlog
+import openai
+import requests
 from validate_email import validate_email
 
-# Setup logging
-handler = colorlog.StreamHandler()
-handler.setFormatter(colorlog.ColoredFormatter(
-    '%(log_color)s%(levelname)s:%(name)s:%(message)s'))
+from config import HEADERS, SITE_URL
+from pyAutoBot import DBHandler, Website
+from pyAutoBot.agenzie import Gabetti, Generica, Remax, Tecnorete, Toscano
+from pyAutoBot.data_extraction import DataExtraction
+from pyAutoBot.RequestHandler import RequestHandler
+from pyAutoBot.PayloadHandler import PayloadHandler
+from pyAutoBot.Utility import Utility
+from secret import OPENAI_API_KEY
 
-logger = colorlog.getLogger(__name__)
+# Setup logging
+# Create a logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Create a console handler
+handler = colorlog.StreamHandler()
+
+# Set a format for the handler
+formatter = colorlog.ColoredFormatter(
+    "%(log_color)s[%(asctime)s] [%(levelname)s] [%(name)s:%(lineno)d] - "
+    "%(message)s",
+    datefmt='%Y-%m-%d %H:%M:%S',
+    log_colors={
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'red,bg_white',
+    }
+)
+
+handler.setFormatter(formatter)
 logger.addHandler(handler)
-logger.setLevel(logging.INFO)
 
 openai.api_key = OPENAI_API_KEY
-
-
-class Utility:
-    @staticmethod
-    def get_base_uri(url):
-        parsed_uri = urlparse(url)
-        base_uri = '{uri.scheme}://{uri.netloc}/'.format(uri=parsed_uri)
-        return base_uri.rstrip('/')
-
-    # Other utility methods can be added here
-    @staticmethod
-    def clean_email(email):
-        # Remove invalid characters
-        email = regex.sub(r"[^a-zA-Z0-9._%+-@]", "", email)
-        
-        # Correct common TLD mistakes
-        email = regex.sub(r"\.con\b", ".com", email)
-        
-        # Remove characters after TLD
-        email = regex.sub(r"(\.[a-zA-Z]{2,4})[a-zA-Z]*$", r"\1", email)
-        
-        return email
-
-
-class RequestHandler:
-    @staticmethod
-    def execute_request(agid, data_payload, headers):
-        complete_url = f"{SITE_URL}/agenzia-mod-do.php?agid={agid}"
-        # logger.info(f"Executing request to {complete_url} with payload: {json.dumps(data_payload, indent=4)}")
-        logger.warning(f"Executing request to {complete_url}")
-        response = requests.post(
-            complete_url, data=data_payload, headers=headers)
-        logger.info(
-            f"Response received from {complete_url}: {response.status_code}")
-        return response
-
-    @staticmethod
-    def _load_agency_from_site(url):
-        logger.critical(f"Loading agency from site: {url}")
-
-        headers = {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'en-US,en;q=0.9,it-IT;q=0.8,it;q=0.7',
-            'Connection': 'keep-alive',
-            'Cookie': 'username=zia; pmd=76795032372222d2c36402b760908586; primoref=https%3A%2F%2Fwww.ultimissimominuto.com%2Feditors%2Fdashboard.php; PHPSESSID=cc8apjv3lmns4pifmrciuis9ml',
-            'Referer': 'https://www.ultimissimominuto.com/editors/agenzia-lista.php',
-            'Sec-Fetch-Dest': 'frame',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'same-origin',
-            'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36',
-            'sec-ch-ua': '\"Chromium\";v=\"116\", \"Not)A;Brand\";v=\"24\", \"Google Chrome\";v=\"116\"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '\"Windows\"'
-        }
-
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Extract input values into a dictionary
-        data_dict = {
-            inp.get('id'): inp.get('value', '')
-            for inp in soup.find_all('input')
-            if inp.get('id')
-        }
-
-        logger.debug(f"Extracted data: {json.dumps(data_dict, indent=4)}")
-        return data_dict
-
-
-class PayloadHandler:
-    def __init__(self, logger):
-        self.logger = logger.getChild(__name__)
-
-    def clean_name(self, name: str) -> str:
-        self.logger.info(f"Cleaning name: {name}")
-        if 'Agenzia Immobiliare' not in name:
-            name = f"Agenzia Immobiliare {name}"
-        patterns = [
-            "(Agenzia Immobiliare Tempocasa).*",
-            "(Agenzia Immobiliare RE/MAX).*",
-            "(Agenzia Immobiliare Tecnocasa).*",
-            "(Agenzia Immobiliare Affiliato Tecnocasa).*",
-            "(Agenzia Immobiliare Affiliato RE/MAX).*",
-            "(Agenzia Immobiliare Progetto Casa Napoli).*",
-            "(Agenzia Immobiliare ScegliCasa Roma).*"
-        ]
-        for pattern in patterns:
-            name = re.sub(pattern, r'\1', name)
-        special_cases = {
-            "Toscano.* Agenzia Immobiliare": 'Agenzia Immobiliare Toscano',
-            "Agenzia Immobiliare 7Case.*": 'Agenzia Immobiliare 7Case',
-            "Agenzia Leonardo Immobiliare.*": "Agenzia Leonardo Immobiliare",
-        }
-        for pattern, replacement in special_cases.items():
-            if re.search(pattern, name):
-                name = replacement
-                break
-        return name
-
-    def create_base_payload(self, data_dict, agid):
-        self.logger.warning(
-            f"Creating base payload for url: {data_dict['url']}")
-        self.logger.info(
-            f"We don't know how to handle this agency, let's try to extrapolate data...")
-
-        data_extractor = DataExtraction(self.logger)
-        ex_data = data_extractor.try_to_extrapolate_data(data_dict['url'])
-        self.logger.debug(f"Extrapolated data: {ex_data}")
-        chi_siamo = ex_data['chisiamo']
-        email = ex_data['email']
-        payload_handler = PayloadHandler(self.logger)
-        nomeente = payload_handler.clean_name(name=data_dict['nomeente'])
-
-        base_payload = {
-            'url': data_dict['url'],
-            'nomeente': nomeente,
-            'telefonostandard': f"{data_dict['telefonostandard']}",
-            'indirizzo': data_dict['indirizzo'],
-            'cap': data_dict['cap'],
-            'localita': data_dict['localita0'],
-            'localitacartella': data_dict['localitacartella0'].lower(),
-            'provincia': data_dict['localitaprovincia0'],
-            'agid': agid,
-            'chisiamo': chi_siamo.encode('latin-1', errors='ignore').decode('unicode_escape'),
-            'email': email
-        }
-        return base_payload
 
 
 class AgencyValidator:
@@ -166,9 +56,10 @@ class AgencyValidator:
         domain_exists = validate_email(email, check_mx=True)
         
         # Check if the email is accepted by the domain
-        email_accepted = validate_email(email, verify=True)
+        # email_accepted = validate_email(email, verify=True)
+        logger.info(f"Email: {email}, is_valid: {is_valid}, domain_exists: {domain_exists}")
         
-        return is_valid and domain_exists and email_accepted
+        return is_valid and domain_exists
 
     @staticmethod
     def validate_agency_data(data):
@@ -213,7 +104,8 @@ class Scrapper:
         self.db_handler = DBHandler()
         self.execute = execute
         self.data_extractor = DataExtraction(self.logger)
-        self._data_dict = RequestHandler._load_agency_from_site(
+        self.reuest_handler = RequestHandler(self.logger)
+        self._data_dict = self.reuest_handler.load_agency_from_site(
             f"{SITE_URL}/agenzia-mod.php?agid={self.agid}")
         self.payload_handler = PayloadHandler(self.logger)
         self.url = self._data_dict['url']
@@ -221,6 +113,7 @@ class Scrapper:
         self.use_ai = use_ai
         with open('comuni.json', 'r') as data:
             self.comuni = json.load(data)
+
 
     def initialize(self):
         self.base_uri = Utility.get_base_uri(self.url)
@@ -270,12 +163,13 @@ class Scrapper:
             "We don't have this agency in our classes, use generic one and try extrapolate data...")
         
         agenzia = Generica(url, logger=self.logger, use_AI=self.use_ai)
-        keys = ['telefonostandard', 'indirizzo', 'cap', 'localita0', 
-                'localitacartella0', 'localitaprovincia0', 'url']
-        for key in keys:
-            if key in self._data_dict:
-                agenzia.payload[key] = self._data_dict[key]
-                
+        agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
+        agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
+        agenzia.payload['cap'] = self._data_dict['cap']
+        agenzia.payload['localita'] = self._data_dict['localita0']
+        agenzia.payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
+        agenzia.payload['provincia'] = self._data_dict['localitaprovincia0']
+        agenzia.payload['url'] = self._data_dict['url']
         agenzia.payload['agid'] = self.agid
         agenzia.payload['localita1'] = agenzia.payload.get('localita')
         agenzia.payload['localitacartella1'] = agenzia.payload.get('localitacartella')
@@ -297,8 +191,6 @@ class Scrapper:
         # try to clean mail
         email = Utility.clean_email(ex_data.get('email', ''))
         is_valid = AgencyValidator.is_valid_email(email)
-        if self.confirm and not is_valid: 
-            exit(f"Invalid email: {email}")
         
         agenzia.payload['email'] = "" if not is_valid else email
         agenzia.payload['noemail'] = 'Y' if agenzia.payload['email'] == '' else 'N'
@@ -482,7 +374,7 @@ class Scrapper:
     def execute_request(self, agenzia):
         website = self.session.query(Website).filter(
             Website.url.like(f"{self.base_uri}%")).first()
-        response = RequestHandler.execute_request(
+        response = self.reuest_handler.execute_request(
             self.agid, agenzia.payload, HEADERS)
         if response.status_code == 200:
             self.logger.info(f"Request executed successfully")
@@ -512,7 +404,7 @@ class Scrapper:
 # The main execution code remains the same
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--agid', help='agid', default='525')
+    parser.add_argument('--agid', help='agid', default='530')
     parser.add_argument('--execute', help='execute request, default is False',
                         default=False, action='store_true')
     parser.add_argument('--confirm', help='confirm request execution',

@@ -3,6 +3,8 @@ import logging
 import re
 import json
 import openai
+import nltk
+import spacy
 from urllib.parse import urlparse
 from abc import ABC, abstractmethod
 from bs4 import BeautifulSoup
@@ -13,6 +15,7 @@ from secret import OPENAI_API_KEY
 
 
 openai.api_key = OPENAI_API_KEY
+
 
 class Agenzia:
     def __init__(self, url: str, logger: logging.Logger, use_AI: bool = False):
@@ -33,23 +36,43 @@ class Agenzia:
     def _call_open_ai(self, message: list) -> str:
         try:
             response = openai.ChatCompletion.create(
-                engine="gpt-3.5-turbo",
-                prompt=message,
+                model="gpt-3.5-turbo",
+                messages=message
             )
             return response['choices'][0]['message']['content'].strip()
-        except openai.error.InvalidRequestError:
-            self.logger.error(f"Failed to call OpenAI API.")
+        except openai.error.OpenAIError as e:
+            if "maximum context length" in str(e):
+                self.logger.error("The message is too long for OpenAI. Consider reducing its length.")
+            else:
+                self.logger.error(f"Error while calling OpenAI: {e}")
             return None
     
     def extract_name_from_text(self, agenzia):
+        self.logger.info("Starting to extract name from text.")
         if not agenzia.soup:
             self.logger.error("agenzia.soup is None.")
             return None
         
-        text = agenzia.soup.get_text(separator=' ', strip=True)
+        text = self.soup.get_text(separator=' ', strip=True)
+        # Carica il modello italiano di SpaCy
+        nlp = spacy.load("it_core_news_sm")
+
+        # Processa il testo con SpaCy
+        doc = nlp(text)
+
+        # Rimuovi le frasi duplicate
+        frasi = [sent.text for sent in doc.sents]
+        frasi_uniche = list(dict.fromkeys(frasi))
+
+        # Rimuovi le stop words
+        testo_pulito = ' '.join([token.text for token in doc if not token.is_stop])
+
+        # Riunisci il testo pulito
+        testo_finale = ' '.join(frasi_uniche)
+        
         messages = [
             {"role": "system", "content": "Sei un assistente virtuale che lavora per un'agenzia immobiliare."},
-            {"role": "user", "content": "Estrai e restituisci solo il nome dell'agenzia immobiliare preceduto da Agenzia Immobiliare dal seguente testo:" + text}
+            {"role": "user", "content": "Estrai e restituisci solo il nome dell'agenzia immobiliare dal seguente testo: \n" + testo_pulito}
         ]
         found_name = self._call_open_ai(messages)
         if isinstance(found_name, str):
