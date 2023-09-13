@@ -304,12 +304,15 @@ class Scrapper:
         
         if not is_valid:
             self.logger.warning(f"Invalid email: {email}")
-            email = input("Insert email: ")
+            email = ""
+        else:
+            agenzia.payload['email'] = email
 
+        agenzia.payload['noemail'] = 'Y' if agenzia.payload['email'] == '' else 'N'
+        
         agenzia.payload['chisiamo'] = chi_siamo.encode(
             'latin-1', errors='ignore').decode('unicode_escape')
-        agenzia.payload['email'] = email
-        agenzia.payload['noemail'] = 'Y' if agenzia.payload['email'] == '' else 'N'
+        
         for i in range(2, 3):
             agenzia.payload[f'localita{i}'] = ""
             agenzia.payload[f'localitacartella{i}'] = ""
