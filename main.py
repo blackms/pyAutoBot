@@ -175,6 +175,16 @@ class Scrapper:
         agenzia.payload['localita1'] = agenzia.payload.get('localita')
         agenzia.payload['localitacartella1'] = agenzia.payload.get('localitacartella')
         agenzia.payload['localitaprovincia1'] = agenzia.payload.get('provincia')
+        
+
+    def decode_text(self, text):
+        encodings = ['utf-8', 'latin1', 'iso-8859-1']  # Puoi aggiungere altre codifiche se necessario
+        for encoding in encodings:
+            try:
+                return text.encode(encoding).decode('utf-8')
+            except UnicodeDecodeError:
+                continue
+        return text  # Se nessuna codifica funziona, restituisci il testo originale
 
     def handle_unknown_agency(self, url: str):
         self.logger.info(
@@ -201,11 +211,19 @@ class Scrapper:
         # try to clean mail
         email = Utility.clean_email(ex_data.get('email', ''))
         is_valid = AgencyValidator.is_valid_email(email)
+        chi_siamo = re.sub(r'\\u([0-9a-fA-F]{4})', lambda x: chr(int(x.group(1), 16)), chi_siamo)
+
         
         agenzia.payload['email'] = "" if not is_valid else email
         agenzia.payload['noemail'] = 'Y' if agenzia.payload['email'] == '' else 'N'
-        agenzia.payload['chisiamo'] = chi_siamo.encode('latin-1', errors='ignore').decode('unicode_escape')
-
+        
+        self.logger.info("Trying to extract description from text...")
+        try:
+            agenzia.payload['chisiamo'] = chi_siamo.encode('latin1').decode('utf-8')
+        except Exception as e:
+            self.logger.error(f"Error: {e}")
+            agenzia.payload['chisiamo'] = chi_siamo
+            
         for i in range(2, 3):
             agenzia.payload.update({f'localita{i}': "", f'localitacartella{i}': "", f'localitaprovincia{i}': ""})
 
@@ -215,13 +233,20 @@ class Scrapper:
             self.add_location_to_payload(agenzia, locations)
 
         # failed to retrieve data from AI
-        if 'Mi dispiace' in agenzia.payload.get('chisiamo', '') or agenzia.payload.get('chisiamo', '') == '':
+        if 'Mi dispiace' in agenzia.payload['chisiamo'] or agenzia.payload['chisiamo'] == '':
+            self.logger.debug(agenzia.payload.get('chisiamo', ''))
             self.logger.warning("Failed retrieving description via AI, manual input...")
             self.logger.error("Error retrieving data from openai, manual input...")
             agenzia.payload['chisiamo'] = input("Insert description: ")
 
         if agenzia.is_agenzia_vacanze():
             agenzia.payload['isaffittituristici'] = 'Y'
+            
+        if agenzia.payload['telefonostandard'] == '':
+            try:
+                agenzia.payload['telefonostandard'] = self.data_extractor.try_parse_phone_number(agenzia)
+            except:
+                self.logger.error("Error retrieving phone number from AI.")
 
         if self.confirm:
             is_valid, message = AgencyValidator.validate_agency_data(agenzia.payload)
@@ -234,7 +259,7 @@ class Scrapper:
     def extract_locations_from_text(self, agenzia):
         text = agenzia.soup.get_text(separator=' ', strip=True)
         messages = [
-            {"role": "system", "content": "Sei un assistente virtuale che lavora per un'agenzia immobiliare."},
+            {"role": "system", "content": "Sei un API di un portale di annunci immobiliari. Riceverai del testo e ritornerai la risposta senza aggiungere testo."},
             {"role": "user", "content": "Estrai e restituisci solo la lista delle città in formato JSON dal seguente testo:" + text}
         ]
 
@@ -254,6 +279,7 @@ class Scrapper:
                 loaded_data = json.loads(found_locations)
             except json.decoder.JSONDecodeError:
                 self.logger.error(f"Cannot parse locations from AI. Using only the default location")
+                self.logger.debug(f"Response from AI: {found_locations}")
                 return []
             
             if isinstance(loaded_data, dict):
