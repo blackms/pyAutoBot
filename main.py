@@ -266,78 +266,64 @@ class Scrapper:
                     logger.warning("Invalid choice. Please enter 'Y' or 'N'.")
 
     def handle_unknown_agency(self, url: str):
-        # We don't have this agency in our classes, use generic one and try extrapolate data
         self.logger.info(
-            f"We don't have this agency in our classes, use generic one and try extrapolate data...")
+            "We don't have this agency in our classes, use generic one and try extrapolate data...")
+        
         agenzia = Generica(url, logger=self.logger, use_AI=self.use_ai)
-
-        agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
-        agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
-        agenzia.payload['cap'] = self._data_dict['cap']
-        agenzia.payload['localita'] = self._data_dict['localita0']
-        agenzia.payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
-        agenzia.payload['provincia'] = self._data_dict['localitaprovincia0']
-        agenzia.payload['url'] = self._data_dict['url']
+        keys = ['telefonostandard', 'indirizzo', 'cap', 'localita0', 
+                'localitacartella0', 'localitaprovincia0', 'url']
+        for key in keys:
+            if key in self._data_dict:
+                agenzia.payload[key] = self._data_dict[key]
+                
         agenzia.payload['agid'] = self.agid
-        agenzia.payload['localita1'] = agenzia.payload['localita']
-        agenzia.payload['localitacartella1'] = agenzia.payload['localitacartella']
-        agenzia.payload['localitaprovincia1'] = agenzia.payload['provincia']
+        agenzia.payload['localita1'] = agenzia.payload.get('localita')
+        agenzia.payload['localitacartella1'] = agenzia.payload.get('localitacartella')
+        agenzia.payload['localitaprovincia1'] = agenzia.payload.get('provincia')
 
         agenzia.payload['nomeente'] = agenzia.extract_name_from_text(agenzia)
         self.get_agency_name_confirmation(agenzia)
 
+        chi_siamo = ''
         # try to extrapolate the description
         try:
             ex_data = self.data_extractor.try_to_extrapolate_data(
-                agenzia.payload['url'])
+                agenzia.payload.get('url'))
             self.logger.warning(f"Extrapolated data: {ex_data}")
-            chi_siamo = ex_data['chisiamo']
+            chi_siamo = ex_data.get('chisiamo', '')
         except openai.error.RateLimitError:
-            self.logger.error(f"Rate limit reached, manual input...")
-            agenzia.payload['chisiamo'] = ''
-            pass
+            self.logger.error("Rate limit reached, manual input...")
 
         # try to clean mail
-        email = Utility.clean_email(ex_data['email'])
+        email = Utility.clean_email(ex_data.get('email', ''))
         is_valid = AgencyValidator.is_valid_email(email)
-        if self.confirm and not is_valid: exit(f"Invalid email: {email}")
+        if self.confirm and not is_valid: 
+            exit(f"Invalid email: {email}")
         
-        if not is_valid:
-            self.logger.warning(f"Invalid email: {email}")
-            email = ""
-        else:
-            agenzia.payload['email'] = email
-
+        agenzia.payload['email'] = "" if not is_valid else email
         agenzia.payload['noemail'] = 'Y' if agenzia.payload['email'] == '' else 'N'
-        
-        agenzia.payload['chisiamo'] = chi_siamo.encode(
-            'latin-1', errors='ignore').decode('unicode_escape')
-        
-        for i in range(2, 3):
-            agenzia.payload[f'localita{i}'] = ""
-            agenzia.payload[f'localitacartella{i}'] = ""
-            agenzia.payload[f'localitaprovincia{i}'] = ""
+        agenzia.payload['chisiamo'] = chi_siamo.encode('latin-1', errors='ignore').decode('unicode_escape')
 
-        # Uso delle funzioni
+        for i in range(2, 3):
+            agenzia.payload.update({f'localita{i}': "", f'localitacartella{i}': "", f'localitaprovincia{i}': ""})
+
         locations = self.extract_locations_from_text(agenzia)
         if locations:
             self.logger.info(f"Found locations in the text: {locations}")
             self.add_location_to_payload(agenzia, locations)
 
-        if 'Mi dispiace' in agenzia.payload['chisiamo'] or agenzia.payload['chisiamo'] == '':
-            # failed to retrieve data from AI
-            self.logger.warning(
-                f"Failed retrieving description via AI, manual input...")
-            self.logger.error(
-                f"Error retrieving data from openai, manual input...")
+        # failed to retrieve data from AI
+        if 'Mi dispiace' in agenzia.payload.get('chisiamo', '') or agenzia.payload.get('chisiamo', '') == '':
+            self.logger.warning("Failed retrieving description via AI, manual input...")
+            self.logger.error("Error retrieving data from openai, manual input...")
             agenzia.payload['chisiamo'] = input("Insert description: ")
+
         if agenzia.is_agenzia_vacanze():
             agenzia.payload['isaffittituristici'] = 'Y'
 
         if self.confirm:
-            is_valid, message = AgencyValidator.validate_agency_data(
-                agenzia.payload)
-            if is_valid is False:
+            is_valid, message = AgencyValidator.validate_agency_data(agenzia.payload)
+            if not is_valid:
                 exit(f"Invalid agency data: {message}")
 
         return agenzia
