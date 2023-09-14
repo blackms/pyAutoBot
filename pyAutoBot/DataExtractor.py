@@ -62,7 +62,7 @@ class DataExtractor:
     def try_parse_phone_number(self, agenzia) -> str:
         text = agenzia.soup.get_text(separator=' ', strip=True)
         messages = [
-            {"rols": "system", "content": "Sei un API che lavora per un'agenzia immobiliare."},
+            {"erols": "system", "content": "Sei un API di un portale di annunci immobiliari. Riceverai del testo e ritornerai la risposta senza aggiungere testo."},
             {"roles:": "user", "content": f"Prova ad estrapolare un numero di telefono dal seguente testo: {text}"}
         ]
         response = self._send_openai_request(messages)
