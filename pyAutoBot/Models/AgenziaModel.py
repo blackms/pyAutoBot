@@ -1,9 +1,10 @@
 import copy
 
 
-def decode_text(self, text):
+def decode_text(text):
         # Puoi aggiungere altre codifiche se necessario
-        encodings = ['utf-8', 'latin1', 'iso-8859-1']
+        #encodings = ['utf-8', 'latin1', 'iso-8859-1']
+        encodings = ['iso-8859-1']
         for encoding in encodings:
             try:
                 return text.encode(encoding).decode('utf-8')

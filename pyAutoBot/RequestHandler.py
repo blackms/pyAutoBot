@@ -29,7 +29,7 @@ class RequestHandler:
     def execute_request(self, agid, data_payload, headers):
         data_payload['azione'] = 'Salva'
         complete_url = f"{SITE_URL}/agenzia-mod-do.php?agid={agid}"
-        self.logger.warning(f"Executing request to {complete_url}")
+        self.logger.info(f"Executing request to {complete_url}")
         response = requests.post(
             complete_url, data=data_payload, headers=self.headers)
         self.logger.info(
@@ -51,8 +51,9 @@ class RequestHandler:
         # self.logger.debug(f"Extracted data: {json.dumps(data_dict, indent=4)}")
         return data_dict
     
-    def put_agency_under_review(self, agenzia, url='https://www.ultimissimominuto.com/editors/agenzia-mod-do.php'):
-        agenzia.payload['azione'] = 'Rivedi'
+    def put_agency_under_review(self, agenzia, message="", url='https://www.ultimissimominuto.com/editors/agenzia-mod-do.php'):
+        agenzia.azione = 'Rivedi'
+        agenzia.note = message
         response = requests.post(url, headers=self.headers, data=agenzia.payload)
         self.logger.info(f"Response received from {url}: {response.status_code}")
         return response.text

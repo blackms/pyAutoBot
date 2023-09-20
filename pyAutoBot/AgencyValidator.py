@@ -16,7 +16,7 @@ class AgencyValidator:
         email_accepted = validate_email(email, verify=True)
         self.logger.info(f"Email: {email}, is_valid: {is_valid}, domain_exists: {domain_exists}, email_accepted: {email_accepted}")
         
-        return is_valid
+        return True if is_valid and domain_exists and email_accepted else False
 
     def validate_agency_data(self, data):
         # Controlla che url, nomeente, telefonostandard non siano vuoti
@@ -52,5 +52,14 @@ class AgencyValidator:
         
         if 'Error retrieving data.' in data.get('chisiamo'):
             return False, "chisiamo contains 'Error retrieving data.'."
+        
+        if 'Facebook' in data.get('nomeente'):
+            return False, "nomeente contains 'Facebook'."
+        
+        if 'Error retrieving data.' in data.get('chisiamo'):
+            return False, "chisiamo contains 'Error retrieving data.'."
+        
+        if 'Mi dispiace' in data.get('chisiamo'):
+            return False, "chisiamo contains 'Mi dispiace'."
 
         return True, "All checks passed."
