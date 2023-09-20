@@ -48,7 +48,7 @@ class RequestHandler:
             if inp.get('id')
         }
 
-        self.logger.debug(f"Extracted data: {json.dumps(data_dict, indent=4)}")
+        # self.logger.debug(f"Extracted data: {json.dumps(data_dict, indent=4)}")
         return data_dict
     
     def put_agency_under_review(self, agenzia, url='https://www.ultimissimominuto.com/editors/agenzia-mod-do.php'):

@@ -1,20 +1,19 @@
 import json
 import logging
 import re
-from abc import ABC, abstractmethod
+
 from collections import Counter
 from urllib.parse import urlparse
 
-import nltk
 import openai
 import requests
 import spacy
 from bs4 import BeautifulSoup
 
-from config import BASE_PAYLOAD
 from secret import OPENAI_API_KEY
 
 from .DataExtractor import DataExtractor
+from .Models.AgenziaModel import AgenziaBase
 
 import urllib3
 
@@ -26,14 +25,14 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 openai.api_key = OPENAI_API_KEY
 
 
-class Agenzia:
-    def __init__(self, url: str, logger: logging.Logger, use_AI: bool = False):
+class Agenzia(AgenziaBase):
+    def __init__(self, data: json, url: str, logger: logging.Logger, use_AI: bool = False):
+        super().__init__(data, logger)
         self.url = url
         self.headers =  {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
         self.logger = logger
-        self.payload = BASE_PAYLOAD
         self.use_AI = use_AI
         
     def _load_html(self):
@@ -126,8 +125,8 @@ class Agenzia:
     
     
 class Generica(Agenzia):
-    def __init__(self, url, logger: logging.Logger, use_AI: bool = False):
-        super().__init__(url, logger, use_AI)
+    def __init__(self, data: json, url, logger: logging.Logger, use_AI: bool = False):
+        super().__init__(data, url, logger, use_AI)
         self.soup = None
         self.logger.getChild(__name__).info(f"Generica object created for {self.url}")
         self._load_html()

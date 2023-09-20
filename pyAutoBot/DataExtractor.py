@@ -92,7 +92,6 @@ class DataExtractor:
         response = self._send_openai_request(messages)
 
         found_locations = response['choices'][0]['message']['content'].strip()
-        self.logger.info(f"Found location: {found_locations}")
 
         if 'Mi dispiace' in found_locations:
             self.logger.warning(f"Failed retrieving locations via AI. Using parser method")

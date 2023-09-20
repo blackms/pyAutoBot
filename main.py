@@ -59,9 +59,6 @@ with open('agids.txt', 'r') as file:
     lines = file.readlines()
 
 
-
-
-
 class Scrapper:
     def __init__(self, agid: int, execute: bool, confirm: bool, use_ai: bool = False):
         self.logger = logger.getChild(self.__class__.__name__)
@@ -80,14 +77,13 @@ class Scrapper:
             self.comuni = json.load(data)
         self.data_extractor = DataExtractor(self.logger)
 
-
     def initialize(self):
         self.base_uri = Utility.get_base_uri(self.url)
         self.db_handler.init_db()
         self.session = self.db_handler.get_session()
         self.base_uri = self.base_uri.rstrip('/')
 
-    def get_agenzia_instance(self, nomeente, url):
+    def get_agenzia_instance(self, data: json, nomeente: str, url: str) -> object:
         agenzia = None
         agency_map = {
             'Gabetti': Gabetti,
@@ -99,7 +95,7 @@ class Scrapper:
         for agency_name, agency_class in agency_map.items():
             if agency_name in nomeente:
                 agenzia = agency_class(
-                    url, logger=self.logger, use_AI=self.use_ai)
+                    data, url, logger=self.logger, use_AI=self.use_ai)
                 nomeente = agenzia.get_name()
                 break
 
@@ -124,40 +120,17 @@ class Scrapper:
                     break
                 else:
                     logger.warning("Invalid choice. Please enter 'Y' or 'N'.")
-                    
-    def _set_common_payload(self, agenzia):
-        agenzia.payload['telefonostandard'] = self._data_dict['telefonostandard']
-        agenzia.payload['indirizzo'] = self._data_dict['indirizzo']
-        agenzia.payload['cap'] = self._data_dict['cap']
-        agenzia.payload['localita'] = self._data_dict['localita0']
-        agenzia.payload['localitacartella'] = self._data_dict['localitacartella0'].lower()
-        agenzia.payload['provincia'] = self._data_dict['localitaprovincia0']
-        agenzia.payload['url'] = self._data_dict['url']
-        agenzia.payload['agid'] = self.agid
-        agenzia.payload['localita1'] = agenzia.payload.get('localita')
-        agenzia.payload['localitacartella1'] = agenzia.payload.get('localitacartella')
-        agenzia.payload['localitaprovincia1'] = agenzia.payload.get('provincia')
-        
-
-    def decode_text(self, text):
-        encodings = ['utf-8', 'latin1', 'iso-8859-1']  # Puoi aggiungere altre codifiche se necessario
-        for encoding in encodings:
-            try:
-                return text.encode(encoding).decode('utf-8')
-            except UnicodeDecodeError:
-                continue
-        return text  # Se nessuna codifica funziona, restituisci il testo originale
 
     def handle_unknown_agency(self, url: str):
         self.logger.info(
             "We don't have this agency in our classes, use generic one and try extrapolate data...")
-        
-        
-        agenzia = Generica(url, logger=self.logger, use_AI=self.use_ai)
-        
-        self._set_common_payload(agenzia)
+
+        agenzia = Generica(self._data_dict, url,
+                           logger=self.logger, use_AI=self.use_ai)
+
         try:
-            agenzia.payload['nomeente'] = agenzia.extract_name_from_text(agenzia)
+            agenzia.payload['nomeente'] = agenzia.extract_name_from_text(
+                agenzia)
         except TypeError:
             self.logger.error(f"Cannot retrieve agency name from text.")
             self.logger.info("Moving agency in to_review.")
@@ -169,8 +142,7 @@ class Scrapper:
         chi_siamo = ''
         # try to extrapolate the description
         try:
-            ex_data = self.data_extractor.try_to_extrapolate_data(
-                agenzia.payload.get('url'))
+            ex_data = self.data_extractor.try_to_extrapolate_data(agenzia.url)
             self.logger.debug(f"Extrapolated data: {ex_data}")
             chi_siamo = ex_data.get('chisiamo', '')
         except openai.error.RateLimitError:
@@ -180,28 +152,31 @@ class Scrapper:
         email = Utility.clean_email(ex_data.get('email', ''))
         validator = AgencyValidator(self.logger)
         is_valid = validator.is_valid_email(email)
-        chi_siamo = re.sub(r'\\u([0-9a-fA-F]{4})', lambda x: chr(int(x.group(1), 16)), chi_siamo)
+        chi_siamo = re.sub(
+            r'\\u([0-9a-fA-F]{4})', lambda x: chr(int(x.group(1), 16)), chi_siamo)
 
-        
         agenzia.payload['email'] = "" if not is_valid else email
         agenzia.payload['noemail'] = 'Y' if agenzia.payload['email'] == '' else 'N'
-        
+
         self.logger.info("Trying to extract description from text...")
         try:
-            agenzia.payload['chisiamo'] = chi_siamo.encode('latin1').decode('utf-8')
+            agenzia.payload['chisiamo'] = chi_siamo.encode(
+                'latin1').decode('utf-8')
         except Exception as e:
             self.logger.error(f"Error: {e}")
             agenzia.payload['chisiamo'] = chi_siamo
-            
+
         for i in range(2, 3):
-            agenzia.payload.update({f'localita{i}': "", f'localitacartella{i}': "", f'localitaprovincia{i}': ""})
+            setattr(agenzia, f'localita{i}', '')
 
         try:
-            locations = self.data_extractor.try_extract_locations_from_text(agenzia)
+            locations = self.data_extractor.try_extract_locations_from_text(
+                agenzia)
         except openai.error.InvalidRequestError:
-            self.logger.error(f"Cannot retrieve properties locations from AI. Using parser method")
+            self.logger.error(
+                f"Cannot retrieve properties locations from AI. Using parser method")
             locations = self.try_get_locations(agenzia.payload['url'])
-            
+
         if locations:
             self.logger.info(f"Found locations in the text: {locations}")
             self.add_location_to_payload(agenzia, locations)
@@ -211,19 +186,22 @@ class Scrapper:
             self.logger.debug(agenzia.payload.get('chisiamo', ''))
             self.logger.error("Error retrieving data from openai")
             if not self.confirm:
-                self.logger.warning("Failed retrieving description via AI, manual input...")
+                self.logger.warning(
+                    "Failed retrieving description via AI, manual input...")
                 agenzia.payload['chisiamo'] = input("Insert description: ")
             else:
-                self.logger.warning("Failed retrieving description via AI, moving agency in to_review...")
+                self.logger.warning(
+                    "Failed retrieving description via AI, moving agency in to_review...")
                 self.reuest_handler.put_agency_under_review(agenzia)
                 exit(1)
 
         if agenzia.is_agenzia_vacanze():
             agenzia.payload['isaffittituristici'] = 'Y'
-            
+
         if agenzia.payload['telefonostandard'] == '':
             try:
-                agenzia.payload['telefonostandard'] = self.data_extractor.try_parse_phone_number(agenzia)
+                agenzia.payload['telefonostandard'] = self.data_extractor.try_parse_phone_number(
+                    agenzia)
             except:
                 self.logger.error("Error retrieving phone number from AI.")
 
@@ -251,18 +229,22 @@ class Scrapper:
         location2 = self.geocode_address(f"{province2}, Italy")
 
         if location1 and location2:
-            distance = geodesic((location1.latitude, location1.longitude), (location2.latitude, location2.longitude)).km
+            distance = geodesic((location1.latitude, location1.longitude),
+                                (location2.latitude, location2.longitude)).km
             return distance
         return float('inf')
 
     def add_location_to_payload(self, agenzia, locations):
         filters = ['napoli', 'canna']
-        existing_locations = [agenzia.payload.get(f'localita{i}') for i in range(1, 4)]
+        existing_locations = [agenzia.payload.get(
+            f'localita{i}') for i in range(1, 4)]
         primary_province = agenzia.payload['localita1']
 
         for location in locations:
-            distance = self.get_distance_between_provinces(primary_province, location['sigla'])
-            self.logger.info(f"Distance between {primary_province} and {location['sigla']}: {distance} km")
+            distance = self.get_distance_between_provinces(
+                primary_province, location['sigla'])
+            self.logger.info(
+                f"Distance between {primary_province} and {location['sigla']}: {distance} km")
             if location['nome'] not in filters and location['nome'] not in existing_locations and distance <= 50:
                 index = None
                 if not agenzia.payload['localita2']:
@@ -272,15 +254,14 @@ class Scrapper:
 
                 if index:
                     agenzia.payload[f'localita{index}'] = location['nome']
-                    agenzia.payload[f'localitacartella{index}'] = location['nome'].lower()
+                    agenzia.payload[f'localitacartella{index}'] = location['nome'].lower(
+                    )
                     agenzia.payload[f'localitaprovincia{index}'] = location['sigla']
 
     def handle_known_agency(self, agenzia):
         self.logger.info(
             f"We already know how to handle this agency: {agenzia.payload['nomeente']}, using the description from the class...")
-        
-        self._set_common_payload(agenzia)
-        agenzia.payload['agid'] = self.agid
+
         agenzia.payload['chisiamo'] = agenzia.get_description()
         agenzia.payload['email'] = agenzia.get_email()
         agenzia.payload['nomeente'] = agenzia.get_name()
@@ -366,7 +347,7 @@ class Scrapper:
         nomeente = self._data_dict['nomeente']
         url = self._data_dict['url']
 
-        agenzia = self.get_agenzia_instance(nomeente, url)
+        agenzia = self.get_agenzia_instance(self._data_dict, nomeente, url)
         if agenzia is None:
             agenzia = self.handle_unknown_agency(url)
         else:
@@ -376,11 +357,10 @@ class Scrapper:
         self.execute_request(agenzia)
 
 
-
 def process_agid(agid, execute, confirm, use_ai):
     # Esegui la tua funzione scraper
     run_scraper(agid, execute, confirm, use_ai)
-    
+
     # Utilizza il lock per garantire l'accesso esclusivo al file
     with file_lock:
         # Rimuovi l'agid processato dalla lista
@@ -394,9 +374,10 @@ def run_scraper(agid, execute, confirm, use_ai):
     del scraper
     return agid
 
-if __name__ == '__main__':        
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--agid', help='agid', default='839')
+    parser.add_argument('--agid', help='agid', default='869')
     parser.add_argument('--execute', help='execute request, default is False',
                         default=False, action='store_true')
     parser.add_argument('--confirm', help='confirm request execution',
@@ -407,9 +388,10 @@ if __name__ == '__main__':
                         default=False, action='store_true')
     parser.add_argument('--multiple', help='multiple agencies',
                         default=False, action='store_true')
-    parser.add_argument('--max-parallelism', help='max parallelism', default=2, type=int)
+    parser.add_argument('--max-parallelism',
+                        help='max parallelism', default=2, type=int)
     args = parser.parse_args()
-    
+
     # Crea un lock per la sincronizzazione
     file_lock = threading.Lock()
 
@@ -423,20 +405,22 @@ if __name__ == '__main__':
     if args.multiple:
         with open('agids.txt', 'r') as data:
             numbers = [int(re.search(r'\[(\d+)\]', item).group(1))
-                    for item in data if re.search(r'\[(\d+)\]', item)]
+                       for item in data if re.search(r'\[(\d+)\]', item)]
             agids = list(set(numbers))
 
         # Configura il numero di processi in parallelo (es. 4)
-        max_parallelism = args.max_parallelism  # Puoi cambiare questo valore tra 2 e 4 come desideri
+        # Puoi cambiare questo valore tra 2 e 4 come desideri
+        max_parallelism = args.max_parallelism
 
         # Esegui gli scraper in parallelo
         with concurrent.futures.ProcessPoolExecutor(max_parallelism) as executor:
-            executor.map(process_agid, agids, [args.execute]*len(agids), [args.confirm]*len(agids), [args.use_ai]*len(agids))
-        
+            executor.map(process_agid, agids, [
+                         args.execute]*len(agids), [args.confirm]*len(agids), [args.use_ai]*len(agids))
+
         # Scrivi il file aggiornato alla fine
         with open('agids.txt', 'w') as file:
             file.writelines(lines)
-            
+
     else:
         scraper = Scrapper(args.agid, args.execute, args.confirm)
         scraper.run()
