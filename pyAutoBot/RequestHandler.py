@@ -27,6 +27,7 @@ class RequestHandler:
         }
         
     def execute_request(self, agid, data_payload, headers):
+        data_payload['azione'] = 'Salva'
         complete_url = f"{SITE_URL}/agenzia-mod-do.php?agid={agid}"
         self.logger.warning(f"Executing request to {complete_url}")
         response = requests.post(

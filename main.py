@@ -1,15 +1,19 @@
 import argparse
+import concurrent.futures
 import json
 import logging
 import re
-import concurrent.futures
+import time
+import threading
 from urllib.parse import urlparse
 
 import colorlog
 import openai
 from geopy.distance import geodesic
 from geopy.geocoders import Nominatim
-from validate_email import validate_email
+from geopy.exc import GeocoderUnavailable
+from ratelimiter import RateLimiter
+
 
 from config import HEADERS, SITE_URL
 from pyAutoBot import DBHandler, Website
@@ -17,8 +21,11 @@ from pyAutoBot.Agenzie import Gabetti, Generica, Remax, Tecnorete, Toscano
 from pyAutoBot.DataExtractor import DataExtractor
 from pyAutoBot.PayloadHandler import PayloadHandler
 from pyAutoBot.RequestHandler import RequestHandler
+from pyAutoBot.AgencyValidator import AgencyValidator
 from pyAutoBot.Utility import Utility
 from secret import OPENAI_API_KEY
+
+rate_limiter = RateLimiter(max_calls=15, period=60)  # 10 richieste al minuto
 
 # Setup logging
 # Create a logger
@@ -47,59 +54,12 @@ logger.addHandler(handler)
 
 openai.api_key = OPENAI_API_KEY
 
+# Leggi il file una sola volta all'inizio
+with open('agids.txt', 'r') as file:
+    lines = file.readlines()
 
-class AgencyValidator:
-    @staticmethod
-    def is_valid_email(email):
-        # Basic validation
-        is_valid = validate_email(email)
-        
-        # Check if the domain of the email exists
-        domain_exists = validate_email(email, check_mx=True)
-        
-        # Check if the email is accepted by the domain
-        email_accepted = validate_email(email, verify=True)
-        logger.info(f"Email: {email}, is_valid: {is_valid}, domain_exists: {domain_exists}, email_accepted: {email_accepted}")
-        
-        return is_valid
 
-    @staticmethod
-    def validate_agency_data(data):
-        # Controlla che url, nomeente, telefonostandard non siano vuoti
-        if not data.get('url') or not data.get('nomeente') or not data.get('telefonostandard'):
-            return False, "URL, nomeente, or telefonostandard is empty."
-        
-        if 'Mi dispiace' in data.get('nomeente'):
-            return False, "Nomeente contains 'Mi dispiace'."
 
-        # Valida l'email tramite regex
-        if not AgencyValidator.is_valid_email(data.get('email')):
-            return False, "Email is not valid."
-
-        # Controlla che noemail sia impostato su 'N'
-        if data.get('noemail') != 'N':
-            return False, "noemail is not set to 'N'."
-
-        # Controlla che indirizzo, cap, localita, localitacartella non siano vuoti
-        if not data.get('indirizzo') or not data.get('cap') or not data.get('localita') or not data.get('localitacartella'):
-            return False, "indirizzo, cap, localita, or localitacartella is empty."
-
-        # Controlla che provincia non sia vuoto
-        if not data.get('provincia'):
-            return False, "provincia is empty."
-
-        # Controlla che localita1, localitaprovincia1, localitacartella1 non siano vuoti
-        if not data.get('localita1') or not data.get('localitaprovincia1') or not data.get('localitacartella1'):
-            return False, "localita1, localitaprovincia1, or localitacartella1 is empty."
-
-        # Controlla che chisiamo non sia vuoto e contenga testo
-        if not data.get('chisiamo') or not data['chisiamo'].strip():
-            return False, "chisiamo is empty or does not contain text."
-        
-        if 'Error retrieving data.' in data.get('chisiamo'):
-            return False, "chisiamo contains 'Error retrieving data.'."
-
-        return True, "All checks passed."
 
 
 class Scrapper:
@@ -218,7 +178,8 @@ class Scrapper:
 
         # try to clean mail
         email = Utility.clean_email(ex_data.get('email', ''))
-        is_valid = AgencyValidator.is_valid_email(email)
+        validator = AgencyValidator(self.logger)
+        is_valid = validator.is_valid_email(email)
         chi_siamo = re.sub(r'\\u([0-9a-fA-F]{4})', lambda x: chr(int(x.group(1), 16)), chi_siamo)
 
         
@@ -267,7 +228,8 @@ class Scrapper:
                 self.logger.error("Error retrieving phone number from AI.")
 
         if self.confirm:
-            is_valid, message = AgencyValidator.validate_agency_data(agenzia.payload)
+            validator = AgencyValidator(self.logger)
+            is_valid, message = validator.validate_agency_data(agenzia.payload)
             if not is_valid:
                 self.logger.debug(json.dumps(agenzia.payload, indent=4))
                 self.logger.critical(f"Invalid agency data: {message}")
@@ -276,14 +238,22 @@ class Scrapper:
 
         return agenzia
 
+    @rate_limiter
+    def geocode_address(self, address):
+        try:
+            return self.geolocator.geocode(address)
+        except GeocoderUnavailable:
+            time.sleep(5)  # Aspetta 10 secondi prima di riprovare
+            return self.geolocator.geocode(address)
+
     def get_distance_between_provinces(self, province1, province2):
-        location1 = self.geolocator.geocode(f"{province1}, Italy")
-        location2 = self.geolocator.geocode(f"{province2}, Italy")
+        location1 = self.geocode_address(f"{province1}, Italy")
+        location2 = self.geocode_address(f"{province2}, Italy")
 
         if location1 and location2:
             distance = geodesic((location1.latitude, location1.longitude), (location2.latitude, location2.longitude)).km
             return distance
-        return float('inf')  # Return a large value if we can't get the location
+        return float('inf')
 
     def add_location_to_payload(self, agenzia, locations):
         filters = ['napoli', 'canna']
@@ -406,6 +376,17 @@ class Scrapper:
         self.execute_request(agenzia)
 
 
+
+def process_agid(agid, execute, confirm, use_ai):
+    # Esegui la tua funzione scraper
+    run_scraper(agid, execute, confirm, use_ai)
+    
+    # Utilizza il lock per garantire l'accesso esclusivo al file
+    with file_lock:
+        # Rimuovi l'agid processato dalla lista
+        lines[:] = [line for line in lines if f"[{agid}]" not in line]
+
+
 def run_scraper(agid, execute, confirm, use_ai):
     logger.info(f"Running scraper for agid: {agid}")
     scraper = Scrapper(agid, execute, confirm, use_ai)
@@ -413,7 +394,7 @@ def run_scraper(agid, execute, confirm, use_ai):
     del scraper
     return agid
 
-if __name__ == '__main__':
+if __name__ == '__main__':        
     parser = argparse.ArgumentParser()
     parser.add_argument('--agid', help='agid', default='839')
     parser.add_argument('--execute', help='execute request, default is False',
@@ -428,6 +409,13 @@ if __name__ == '__main__':
                         default=False, action='store_true')
     parser.add_argument('--max-parallelism', help='max parallelism', default=2, type=int)
     args = parser.parse_args()
+    
+    # Crea un lock per la sincronizzazione
+    file_lock = threading.Lock()
+
+    # Leggi il file una sola volta all'inizio
+    with open('agids.txt', 'r') as file:
+        lines = file.readlines()
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
@@ -443,15 +431,12 @@ if __name__ == '__main__':
 
         # Esegui gli scraper in parallelo
         with concurrent.futures.ProcessPoolExecutor(max_parallelism) as executor:
-            for agid in executor.map(run_scraper, agids, [args.execute]*len(agids), [args.confirm]*len(agids), [args.use_ai]*len(agids)):
-                # Rimuovi l'agid processato dal file
-                with open('agids.txt', 'r') as file:
-                    lines = file.readlines()
-
-                with open('agids.txt', 'w') as file:
-                    for line in lines:
-                        if f"[{agid}]" not in line:
-                            file.write(line)
+            executor.map(process_agid, agids, [args.execute]*len(agids), [args.confirm]*len(agids), [args.use_ai]*len(agids))
+        
+        # Scrivi il file aggiornato alla fine
+        with open('agids.txt', 'w') as file:
+            file.writelines(lines)
+            
     else:
         scraper = Scrapper(args.agid, args.execute, args.confirm)
         scraper.run()
