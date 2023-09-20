@@ -1,17 +1,26 @@
-import requests
+import json
 import logging
 import re
-import json
-import openai
-import nltk
-import spacy
-from urllib.parse import urlparse
 from abc import ABC, abstractmethod
-from bs4 import BeautifulSoup
-from .DataExtractor import DataExtractor
-from config import BASE_PAYLOAD
 from collections import Counter
+from urllib.parse import urlparse
+
+import nltk
+import openai
+import requests
+import spacy
+from bs4 import BeautifulSoup
+
+from config import BASE_PAYLOAD
 from secret import OPENAI_API_KEY
+
+from .DataExtractor import DataExtractor
+
+import urllib3
+
+# Disabilita gli avvisi di sicurezza (non raccomandato per la produzione!)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 
 openai.api_key = OPENAI_API_KEY
@@ -29,14 +38,14 @@ class Agenzia:
         
     def _load_html(self):
         self.logger.info(f"Loading HTML for {self.url}...")
-        response = requests.get(self.url, headers=self.headers)
+        response = requests.get(self.url, verify=False, headers=self.headers)
         if response.status_code == 200:
             self.soup = BeautifulSoup(response.text, 'html.parser')
             
     def _call_open_ai(self, message: list) -> str:
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
+                model="gpt-3.5-turbo-16k",
                 messages=message
             )
             return response['choices'][0]['message']['content'].strip()

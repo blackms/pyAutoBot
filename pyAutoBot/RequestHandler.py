@@ -1,29 +1,15 @@
-from config import SITE_URL
+import json
+
 import requests
 from bs4 import BeautifulSoup
-import json
-import logging
-import colorlog
+
+from config import SITE_URL
 
 
 class RequestHandler:
     def __init__(self, logger):
         self.logger = logger.getChild(__name__)
-        
-    def execute_request(self, agid, data_payload, headers):
-        complete_url = f"{SITE_URL}/agenzia-mod-do.php?agid={agid}"
-        # logger.info(f"Executing request to {complete_url} with payload: {json.dumps(data_payload, indent=4)}")
-        self.logger.warning(f"Executing request to {complete_url}")
-        response = requests.post(
-            complete_url, data=data_payload, headers=headers)
-        self.logger.info(
-            f"Response received from {complete_url}: {response.status_code}")
-        return response
-
-    def load_agency_from_site(self, url):
-        self.logger.info(f"Loading agency from site: {url}")
-
-        headers = {
+        self.headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'en-US,en;q=0.9,it-IT;q=0.8,it;q=0.7',
             'Connection': 'keep-alive',
@@ -39,8 +25,19 @@ class RequestHandler:
             'sec-ch-ua-mobile': '?0',
             'sec-ch-ua-platform': '\"Windows\"'
         }
+        
+    def execute_request(self, agid, data_payload, headers):
+        complete_url = f"{SITE_URL}/agenzia-mod-do.php?agid={agid}"
+        self.logger.warning(f"Executing request to {complete_url}")
+        response = requests.post(
+            complete_url, data=data_payload, headers=self.headers)
+        self.logger.info(
+            f"Response received from {complete_url}: {response.status_code}")
+        return response
 
-        response = requests.get(url, headers=headers)
+    def load_agency_from_site(self, url):
+        self.logger.info(f"Loading agency from site: {url}")
+        response = requests.get(url, headers=self.headers)
         soup = BeautifulSoup(response.text, 'html.parser')
 
         # Extract input values into a dictionary
@@ -52,3 +49,9 @@ class RequestHandler:
 
         self.logger.debug(f"Extracted data: {json.dumps(data_dict, indent=4)}")
         return data_dict
+    
+    def put_agency_under_review(self, agenzia, url='https://www.ultimissimominuto.com/editors/agenzia-mod-do.php'):
+        agenzia.payload['azione'] = 'Rivedi'
+        response = requests.post(url, headers=self.headers, data=agenzia.payload)
+        self.logger.info(f"Response received from {url}: {response.status_code}")
+        return response.text

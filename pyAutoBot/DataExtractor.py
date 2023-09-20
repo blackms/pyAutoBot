@@ -2,6 +2,7 @@ import requests
 import logging
 import re
 import openai
+import json
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
 from secret import OPENAI_API_KEY
@@ -19,10 +20,24 @@ class DataExtractor:
     def __init__(self, logger: logging.Logger):
         self.logger = logger.getChild(__name__)
         openai.api_key = OPENAI_API_KEY
+        with open('comuni.json', 'r') as data:
+            self.comuni = json.load(data)
+        
+    def _find_city(self, text: str) -> dict:
+        for entry in self.comuni:
+            # Verifica se il nome della città è seguito da uno spazio o se è alla fine del testo
+            pattern = re.compile(r'\b' + re.escape(entry['nome']) + r'(\s|$)')
+            if pattern.search(text):
+                return {
+                    'nome': entry['nome'],
+                    'provincia': entry['provincia']['nome'],
+                    'sigla': entry['sigla']
+                }
+        return None
 
     def _send_openai_request(self, messages):
         try:
-            return openai.ChatCompletion.create(model="gpt-3.5-turbo", messages=messages)
+            return openai.ChatCompletion.create(model="gpt-3.5-turbo-16k", messages=messages)
         except Exception as e:
             self.logger.error(f"Error retrieving data: {e}")
             return None
@@ -67,6 +82,41 @@ class DataExtractor:
         ]
         response = self._send_openai_request(messages)
         return response['choices'][0]['message']['content'].strip() if response else "Error retrieving data."
+    
+    def try_extract_locations_from_text(self, agenzia) -> list:
+        text = agenzia.soup.get_text(separator=' ', strip=True)
+        messages = [
+            {"role": "system", "content": "Sei un API di un portale di annunci immobiliari. Riceverai del testo e ritornerai la risposta senza aggiungere testo."},
+            {"role": "user", "content": "Estrai e restituisci solo la lista delle città in formato JSON dal seguente testo:" + text}
+        ]
+        response = self._send_openai_request(messages)
+
+        found_locations = response['choices'][0]['message']['content'].strip()
+        self.logger.info(f"Found location: {found_locations}")
+
+        if 'Mi dispiace' in found_locations:
+            self.logger.warning(f"Failed retrieving locations via AI. Using parser method")
+            return []
+
+        try:
+            loaded_data = json.loads(found_locations)
+        except json.decoder.JSONDecodeError:
+            self.logger.error(f"Cannot parse locations from AI. Using only the default location")
+            self.logger.debug(f"Response from AI: {found_locations}")
+            return []
+        
+        if isinstance(loaded_data, dict):
+            found_locations = list(loaded_data.values())
+        else:
+            found_locations = loaded_data
+
+        self.logger.info(f"Found location: {found_locations}")
+
+        flat_locations = [item for sublist in found_locations for item in sublist]
+        locations = [self._find_city(location) for location in flat_locations if location]
+
+        # Filtra eventuali valori None dalla lista prima di restituirla
+        return [location for location in locations if location]
 
     def get_soup(self, url: str) -> BeautifulSoup:
         response = requests.get(url, headers=self.HEADERS)
