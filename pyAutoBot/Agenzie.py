@@ -8,7 +8,6 @@ from urllib.parse import urlparse
 
 import openai
 import requests
-import spacy
 from bs4 import BeautifulSoup
 
 from secret import OPENAI_API_KEY
@@ -115,29 +114,6 @@ class Agenzia(AgenziaBase):
         if response.status_code == 200:
             self.soup = BeautifulSoup(response.text, 'html.parser')
 
-    def _call_open_ai(self, message: list) -> str:
-        # Converti la lista di messaggi in una stringa e misura la sua lunghezza
-        total_length = sum(len(m['content']) for m in message)
-        
-        # Se la lunghezza supera il limite, tronca il messaggio
-        if total_length > 15000:
-            self.logger.warning("Message is too long, truncating...")
-            excess_length = total_length - 15000
-            message[-1]['content'] = message[-1]['content'][:-excess_length]
-        try:
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo-16k",
-                messages=message
-            )
-            return response['choices'][0]['message']['content'].strip()
-        except openai.error.OpenAIError as e:
-            if "maximum context length" in str(e):
-                self.logger.error(
-                    "The message is too long for OpenAI. Consider reducing its length.")
-            else:
-                self.logger.error(f"Error while calling OpenAI: {e}")
-            return None
-
     def extract_name_from_text(self, agenzia):
         self.logger.info("Starting to extract name from text.")
         if not agenzia.soup:
@@ -146,28 +122,13 @@ class Agenzia(AgenziaBase):
             return None
 
         text = self.soup.get_text(separator=' ', strip=True)
-        # Carica il modello italiano di SpaCy
-        nlp = spacy.load("it_core_news_sm")
-
-        # Processa il testo con SpaCy
-        doc = nlp(text)
-
-        # Rimuovi le frasi duplicate
-        frasi = [sent.text for sent in doc.sents]
-        frasi_uniche = list(dict.fromkeys(frasi))
-
-        # Rimuovi le stop words
-        testo_pulito = ' '.join(
-            [token.text for token in doc if not token.is_stop])
-
-        # Riunisci il testo pulito
-        testo_finale = ' '.join(frasi_uniche)
 
         messages = [
             {"role": "system", "content": "Sei un API di un portale di annunci immobiliari. Riceverai del testo e ritornerai la risposta senza aggiungere testo."},
-            {"role": "user", "content": "Estrai e restituisci solo il nome dell'agenzia immobiliare dal seguente testo: \n" + testo_pulito}
+            {"role": "user", "content": "Estrai e restituisci solo il nome dell'agenzia immobiliare dal seguente testo: \n" + text}
         ]
-        found_name = self._call_open_ai(messages)
+        found_name = self.data_extractor.send_openai_request(messages)['choices'][0]['message']['content'].strip(
+        )
         if isinstance(found_name, str):
             return found_name
         if isinstance(found_name, dict):
@@ -193,12 +154,12 @@ class Agenzia(AgenziaBase):
         name_keywords = [
             'casa vacanze', 'appartamenti per vacanze',
             'affitti brevi', 'affitti turistici', 'affitti per vacanze',
-            'appartamenti', 'vacanze', 'vacanza'
+            'vacanze', 'vacanza'
         ]
 
         chi_siamo_keywords = [
-            'breakfast', 'vacanza', 'vacanze', 'appartamenti',
-            'appartamento', 'tour', 'touring'
+            'breakfast', 'vacanza', 'vacanze',
+            'touring'
         ]
 
         for name_keyword in name_keywords:
@@ -217,7 +178,10 @@ class Generica(Agenzia):
             f"Generica object created for {self.url}")
         self._load_html()
         self.data_extraction = DataExtractor(self.logger)
-
+        self.json_data = self.data_extraction.retrieve_all_data_with_single_request(self)
+        if self.json_data == {}:
+            self.logger.error("Failed to load HTML, putting agency under review.")
+            self.request_handler.put_agency_under_review(self, "Failed to load HTML.")
 
 class Gabetti(Agenzia):
     def __init__(self, url, logger: logging.Logger, use_AI: bool = False):

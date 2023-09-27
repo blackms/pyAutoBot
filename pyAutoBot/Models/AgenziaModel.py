@@ -1,10 +1,10 @@
 import copy
 
 
-def decode_text(text):
+def decode_text(self, text):
         # Puoi aggiungere altre codifiche se necessario
-        #encodings = ['utf-8', 'latin1', 'iso-8859-1']
-        encodings = ['iso-8859-1']
+        encodings = ['utf-8', 'latin1', 'iso-8859-1']
+        # encodings = ['iso-8859-1']
         for encoding in encodings:
             try:
                 return text.encode(encoding).decode('utf-8')
@@ -264,7 +264,7 @@ class AgenziaBase:
 
     @chisiamo.setter
     def chisiamo(self, value):
-        value = decode_text(value)
+        value = decode_text(self, value)
         self._chisiamo = value
         self.payload['chisiamo'] = value
 

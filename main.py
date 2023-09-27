@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import time
-import threading
+import queue
 from urllib.parse import urlparse
 
 import colorlog
@@ -53,10 +53,6 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 
 openai.api_key = OPENAI_API_KEY
-
-# Leggi il file una sola volta all'inizio
-with open('agids.txt', 'r') as file:
-    lines = file.readlines()
 
 
 class AutoBot:
@@ -133,25 +129,23 @@ class AutoBot:
             # must be handled manually
             self.logger.error("Error retrieving data from AI.")
             self.logger.info("Moving agency in to_review.")
-            self.request_handler.put_agency_under_review(self, "Error retrieving data from AI.")
+            self.request_handler.put_agency_under_review(
+                self, "Error retrieving data from AI.")
             return None
 
         # try to clean mail
         email = Utility.clean_email(agenzia.extrapolated_data['email'])
         validator = AgencyValidator(self.logger)
-        is_valid = validator.is_valid_email(email)
+
         chi_siamo = re.sub(
             r'\\u([0-9a-fA-F]{4})', lambda x: chr(int(x.group(1), 16)), extrapolated_data['chisiamo'])
 
-        agenzia.payload['email'] = "" if not is_valid else email
+        # Anche se il controllo dell'email e' ritorna che non e' valida, inseriscila comunque, potrebbe essere un falso positivo
+        agenzia.email = email
         agenzia.payload['noemail'] = 'Y' if agenzia.payload['email'] == '' else 'N'
 
         self.logger.info("Trying to extract description from text...")
-        try:
-            agenzia.chisiamo = chi_siamo
-        except Exception as e:
-            self.logger.error(f"Error: {e}")
-            agenzia.payload['chisiamo'] = chi_siamo
+        agenzia.chisiamo = chi_siamo
 
         for i in range(2, 3):
             setattr(agenzia, f'localita{i}', '')
@@ -159,6 +153,48 @@ class AutoBot:
         try:
             locations = self.data_extractor.try_extract_locations_from_text(
                 agenzia)
+        except openai.error.InvalidRequestError:
+            self.logger.error(
+                f"Cannot retrieve properties locations from AI. Using parser method")
+            locations = agenzia.try_get_locations(agenzia.payload['url'])
+
+        if locations:
+            self.logger.info(f"Found locations in the text: {locations}")
+            self.add_location_to_payload(agenzia, locations)
+
+        if agenzia.is_agenzia_vacanze():
+            agenzia.isaffittituristici = 'Y'
+            
+        if agenzia.telefonostandard == '':
+            agenzia.telefonostandard = agenzia.json_data['phone']
+
+        if self.confirm:
+            validator = AgencyValidator(self.logger)
+            is_valid, message = validator.validate_agency_data(agenzia.payload)
+            self.logger.debug(f"Is valid: {is_valid}, message: {message}")
+            if is_valid is False:
+                self.logger.debug(json.dumps(agenzia.payload, indent=4))
+                self.logger.critical(f"Invalid agency data: {message}")
+                # put agency under review
+                self.request_handler.put_agency_under_review(agenzia, message)
+                return None
+
+        return agenzia
+    
+    def new_handle_unknown_agency(self, url: str) -> object:
+        agenzia = Generica(self._data_dict, url,
+                           logger=self.logger, use_AI=self.use_ai)
+        
+        agenzia.nomeente = agenzia.json_data['name']
+        agenzia.chisiamo = agenzia.json_data['description']
+        agenzia.email = Utility.clean_email(agenzia.json_data['email'])
+        agenzia.noemail = 'Y' if agenzia.payload['email'] == '' else 'N'
+        
+        for i in range(2, 3):
+            setattr(agenzia, f'localita{i}', '')
+
+        try:
+            locations = agenzia.json_data['properties']
         except openai.error.InvalidRequestError:
             self.logger.error(
                 f"Cannot retrieve properties locations from AI. Using parser method")
@@ -190,6 +226,7 @@ class AutoBot:
                 return None
 
         return agenzia
+        
 
     @rate_limiter
     def geocode_address(self, address):
@@ -265,21 +302,23 @@ class AutoBot:
                         agenzia.payload[f'localitaprovincia{index}'] = location['provincia']
         return agenzia
 
-    
-
     def execute_request(self, agenzia):
         website = self.session.query(Website).filter(
             Website.url.like(f"{self.base_uri}%")).first()
         response = self.request_handler.execute_request(
-            self.agid, agenzia.payload, HEADERS)
+            self.agid, agenzia.payload)
         if response.status_code == 200:
             self.logger.info(f"Request executed successfully")
             # save payload to database
-            self.logger.info(f"Saving payload to database")
             website = Website(**agenzia.payload)
             self.session.add(website)
             self.session.commit()
             self.logger.info(f"Payload saved to database")
+            
+    def try_handle_review(self, agid):
+        self.logger.info(f"Trying to handle review for agid: {agid}")
+        agenzia = Generica(self._data_dict, self.url, self.logger, self.use_ai)
+        pass        
 
     def run(self):
         self.initialize()
@@ -291,9 +330,9 @@ class AutoBot:
             agenzia = self.handle_unknown_agency(url)
         else:
             agenzia = self.handle_known_agency(agenzia)
-            
+
         if agenzia is None:
-            self.logger.error("Agency not valid.")
+            self.logger.error("We put the agency under review.")
         else:
             self.logger.debug(json.dumps(agenzia.payload, indent=4))
             self.execute_request(agenzia)
@@ -314,7 +353,7 @@ def run_scraper(agid, execute, confirm, use_ai):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--agid', help='agid', default='2233')
+    parser.add_argument('--agid', help='agid', default='14201')
     parser.add_argument('--execute', help='execute request, default is False',
                         default=True, action='store_true')
     parser.add_argument('--confirm', help='confirm request execution',
@@ -327,20 +366,38 @@ if __name__ == '__main__':
                         default=False, action='store_true')
     parser.add_argument('--max-parallelism',
                         help='max parallelism', default=2, type=int)
+    parser.add_argument('--print-next', help='print next agids', default=False, action='store_true'
+                        )
+    parser.add_argument('--next', help='number of agids to process', default=1, type=int)
+    parser.add_argument('--review', help='review agencies', default=False, action='store_true')
     args = parser.parse_args()
 
-    # Leggi il file una sola volta all'inizio
-    with open('agids.txt', 'r') as file:
-        lines = file.readlines()
+    if args.print_next:
+        request_handler = RequestHandler(logger)
+        agids = request_handler.fetch_agenzia_ids()
+        logger.info(f"Total number of agencies to process: {len(agids)}")
+        logger.info(json.dumps(agids, indent=4))
+        exit(0)
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
+    if args.review:
+        request_handler = RequestHandler(logger)
+        agids = request_handler.retrieve_agencies_under_review()
+        logger.info(f"Total number of agencies under review retrieved: {len(agids)}")
+        exit(0)
+
     if args.multiple:
-        with open('agids.txt', 'r') as data:
-            numbers = [int(re.search(r'\[(\d+)\]', item).group(1))
-                       for item in data if re.search(r'\[(\d+)\]', item)]
-            agids = list(set(numbers))
+        request_handler = RequestHandler(logger)
+        agids = request_handler.fetch_agenzia_ids()
+        
+        # take only n agids, according to --next parameter
+        agids = agids[:args.next]
+
+        total_agencies = len(agids)
+        logger.critical(
+            f"Total number of agencies to process: {total_agencies}")
 
         # Configura il numero di processi in parallelo (es. 4)
         # Puoi cambiare questo valore tra 2 e 4 come desideri
@@ -348,9 +405,10 @@ if __name__ == '__main__':
 
         # Esegui gli scraper in parallelo
         with concurrent.futures.ProcessPoolExecutor(max_parallelism) as executor:
-            executor.map(process_agid, agids, [
-                         args.execute]*len(agids), [args.confirm]*len(agids), [args.use_ai]*len(agids))
-
+            results = executor.map(process_agid, agids,
+                                   [args.execute]*len(agids),
+                                   [args.confirm]*len(agids),
+                                   [args.use_ai]*len(agids))
     else:
         scraper = AutoBot(args.agid, args.execute, args.confirm)
         scraper.run()
